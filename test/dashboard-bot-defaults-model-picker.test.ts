@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import React from 'react';
+import TestRenderer, { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchDetectedModels,
@@ -6,6 +8,9 @@ import {
   modelSuggestionsForOption,
   type CliOptionsState,
 } from '../src/dashboard/web/bot-defaults.js';
+import { BotAgentSection } from '../src/dashboard/web/bot-defaults-page.js';
+
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const page = readFileSync(new URL('../src/dashboard/web/bot-defaults-page.tsx', import.meta.url), 'utf8');
 const onboarding = readFileSync(new URL('../src/dashboard/web/bot-onboarding.tsx', import.meta.url), 'utf8');
@@ -49,6 +54,72 @@ describe('ModelPickerField 源码接线', () => {
   it('中英 i18n 都含 4 个 modelPicker key', () => {
     for (const key of ['modelPickerDefault', 'modelPickerCustom', 'modelPickerBack', 'modelPickerDetected']) {
       expect(i18n.match(new RegExp(`'botDefaults\\.${key}'`, 'g'))).toHaveLength(2);
+    }
+  });
+});
+
+describe('BotAgentSection runtime catalog hydration', () => {
+  it('clears the previous runtime catalog while the replacement runtime is still loading', async () => {
+    const previousFetch = globalThis.fetch;
+    let resolveReplacement!: (response: any) => void;
+    let modelRequests = 0;
+    (globalThis as any).fetch = vi.fn(async (url: string) => {
+      if (!String(url).includes('/api/cli-options/models')) throw new Error(`unexpected request: ${url}`);
+      modelRequests += 1;
+      if (modelRequests === 1) {
+        return { ok: true, status: 200, json: async () => ({ models: ['old-live'], source: 'live' }) } as any;
+      }
+      return new Promise(resolve => { resolveReplacement = resolve; });
+    });
+
+    const cliOptions: CliOptionsState = {
+      options: [{ id: 'codex', label: 'Codex', modelChoices: ['static-model'] }],
+      ttadkModelDefault: '',
+      ttadkModelSuggestions: [],
+    };
+    const bot = (executable: string) => ({
+      larkAppId: 'cli_runtime_catalog',
+      cliId: 'codex',
+      agentSelectionKey: 'codex',
+      model: '',
+      cliRuntime: { id: executable, displayName: executable, executable, source: 'configured' as const },
+      cliPathOverride: executable,
+    });
+
+    let renderer!: TestRenderer.ReactTestRenderer;
+    try {
+      await act(async () => {
+        renderer = TestRenderer.create(React.createElement(BotAgentSection, {
+          bot: bot('/opt/old-codex'),
+          sessionFallback: 'codex',
+          cliState: cliOptions,
+          patchBot: () => undefined,
+        }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(renderer.root.findByProps({ dataInput: 'agentModel' }).props.options).toEqual(['old-live']);
+
+      act(() => {
+        renderer.update(React.createElement(BotAgentSection, {
+          bot: bot('/opt/new-codex'),
+          sessionFallback: 'codex',
+          cliState: cliOptions,
+          patchBot: () => undefined,
+        }));
+      });
+      expect(modelRequests).toBe(2);
+      expect(renderer.root.findByProps({ dataInput: 'agentModel' }).props.options).toEqual(['static-model']);
+
+      await act(async () => {
+        resolveReplacement({ ok: true, status: 200, json: async () => ({ models: ['new-live'], source: 'live' }) });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(renderer.root.findByProps({ dataInput: 'agentModel' }).props.options).toEqual(['new-live']);
+    } finally {
+      if (renderer) act(() => renderer.unmount());
+      (globalThis as any).fetch = previousFetch;
     }
   });
 });
