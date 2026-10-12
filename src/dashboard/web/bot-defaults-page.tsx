@@ -75,7 +75,7 @@ import {
   MAX_GRANT_QUOTA,
 } from '../../services/grant-policy.js';
 import { BOT_DESCRIPTION_MAX_CHARS, normalizeBotDescriptions } from '../../services/bot-description-schema.js';
-import { CODEX_REASONING_EFFORTS, isBackendVariantCliId, reasoningEffortsForCliModel } from '../../services/codex-reasoning-effort.js';
+import { CODEX_REASONING_EFFORTS, isBackendVariantCliId, isCodexReasoningEffort, reasoningEffortsForCliModel } from '../../services/codex-reasoning-effort.js';
 import { lookupCliSelection } from '../../setup/cli-selection.js';
 import {
   STREAMING_CARD_BUTTON_IDS,
@@ -2435,7 +2435,11 @@ export function BotAgentSection(props: {
   const suggestions = modelSuggestionsForOption(option, cliState);
   const modelDisabledByCli = option?.gateway === 'ttadk' && option.acceptsModel === false;
   // live 探测当前 CLI 的可用模型（ttadk 网关项保持现状，只用静态建议列表）。
-  const [detectedModels, setDetectedModels] = useState<{ models: string[]; source: 'live' | 'static' } | null>(null);
+  const [detectedModels, setDetectedModels] = useState<{
+    models: string[];
+    source: 'live' | 'static';
+    reasoningEffortsByModel?: Record<string, string[]>;
+  } | null>(null);
   const [detectingModels, setDetectingModels] = useState(false);
   useEffect(() => {
     if (option?.gateway === 'ttadk') {
@@ -2445,13 +2449,18 @@ export function BotAgentSection(props: {
     }
     // stale 标志防卸载/竞态：cliKey 快速切换时旧响应不得覆盖新 CLI 的候选。
     let stale = false;
+    // Runtime/wrapper changes can keep the same cliKey. Clear the previous
+    // executable's catalog immediately so it cannot be selected while the new
+    // persisted runtime is being probed.
+    setDetectedModels(null);
     setDetectingModels(true);
-    fetchDetectedModels(cliKey)
+    fetchDetectedModels(cliKey, bot.larkAppId)
       .then(result => { if (!stale) setDetectedModels(result); })
       .finally(() => { if (!stale) setDetectingModels(false); });
     return () => { stale = true; };
-    // 只按 cliKey 重新探测；cliState 刷新带来的静态候选经 suggestions 合入，无需重探。
-  }, [cliKey]);
+    // cliState 刷新带来的静态候选经 suggestions 合入，无需重探；持久化
+    // runtime/launch shape 变化则必须重探，避免同一 cliKey 沿用旧目录。
+  }, [bot.larkAppId, bot.cliLaunchMode, bot.wrapperCli, cliKey, runtimeConfigKey]);
   // Fetch DSH profile list when dsh is selected.
   useEffect(() => {
     if (cliKey !== 'dsh') return;
@@ -2795,8 +2804,12 @@ export function BotAgentSection(props: {
   // The dsh adapter is the only one that forwards a runner turn timeout.
   const isDsh = selectedCliId === 'dsh';
   const reasoningEffortOptions = useMemo(
-    () => reasoningEffortsForCliModel(reasoningCatalogKey(cliKey), model),
-    [cliKey, isCodexSelection, model],
+    () => {
+      const live = isCodexSelection ? detectedModels?.reasoningEffortsByModel?.[model] : undefined;
+      return live?.filter(isCodexReasoningEffort)
+        ?? reasoningEffortsForCliModel(reasoningCatalogKey(cliKey), model);
+    },
+    [cliKey, detectedModels, isCodexSelection, model],
   );
   const nativeReasoningEffortOptions = useMemo(
     () => nativeModelMode === 'custom'

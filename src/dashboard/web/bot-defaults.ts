@@ -274,23 +274,16 @@ export function modelSuggestionsForOption(opt: CliOption | undefined, cliState: 
 }
 
 /**
- * 合并模型候选：detected（后端已合并静态+live 去重）优先；detected 缺失时回退 static。
- * 两份列表再做一次去重保序，防御后端合并遗漏。纯函数，供单测。
+ * live 探测非空时使用当前 runtime 的权威目录；探测缺失/为空时回退 static。
  */
 export function mergeModelCandidates(
   staticChoices: readonly string[],
   detected: readonly string[] | null | undefined,
 ): string[] {
-  const primary = detected ?? staticChoices;
-  const extra = detected ? staticChoices : [];
+  const primary = detected && detected.length > 0 ? detected : staticChoices;
   const seen = new Set<string>();
   const out: string[] = [];
   for (const item of primary) {
-    if (typeof item !== 'string' || seen.has(item)) continue;
-    seen.add(item);
-    out.push(item);
-  }
-  for (const item of extra) {
     if (typeof item !== 'string' || seen.has(item)) continue;
     seen.add(item);
     out.push(item);
@@ -304,14 +297,32 @@ export function mergeModelCandidates(
  */
 export async function fetchDetectedModels(
   key: string,
-): Promise<{ models: string[]; source: 'live' | 'static' } | null> {
+  appId?: string,
+): Promise<{
+  models: string[];
+  source: 'live' | 'static';
+  reasoningEffortsByModel?: Record<string, string[]>;
+} | null> {
   try {
-    const r = await fetch(`/api/cli-options/models?key=${encodeURIComponent(key)}`);
+    const query = new URLSearchParams({ key });
+    if (appId) query.set('appId', appId);
+    const r = await fetch(`/api/cli-options/models?${query.toString()}`);
     const body = await r.json().catch(() => ({}));
     if (!r.ok || !body || !Array.isArray(body.models)) return null;
     const models = body.models.filter((m: unknown): m is string => typeof m === 'string');
     const source: 'live' | 'static' = body.source === 'live' ? 'live' : 'static';
-    return { models, source };
+    const reasoningEffortsByModel = body.reasoningEffortsByModel
+      && typeof body.reasoningEffortsByModel === 'object'
+      ? Object.fromEntries(Object.entries(body.reasoningEffortsByModel)
+        .filter(([, levels]) => Array.isArray(levels))
+        .map(([model, levels]) => [model, (levels as unknown[])
+          .filter((level): level is string => typeof level === 'string')]))
+      : undefined;
+    return {
+      models,
+      source,
+      ...(reasoningEffortsByModel ? { reasoningEffortsByModel } : {}),
+    };
   } catch {
     return null;
   }

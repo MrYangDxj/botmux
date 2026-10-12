@@ -742,6 +742,9 @@ export interface CliAdapter {
    *    `modelChoices` only. */
   readonly detectModels?: () => Promise<readonly string[] | null>;
 
+  /** Rich live catalogue for CLIs that expose per-model capabilities. */
+  readonly detectModelCatalog?: () => Promise<readonly DetectedModelCatalogEntry[] | null>;
+
   /** Claude-family CLIs only (claude-code, seed). The data root holding
    *  `projects/<hash>/<id>.jsonl`, `sessions/<pid>.json`, `tasks/`,
    *  `keybindings.json` and `settings.json`. When set, the worker drives the
@@ -871,6 +874,12 @@ export interface CliAdapter {
    *  by the daemon. Undefined means this adapter has no proven native rename
    *  command and must never receive a best-guess slash command. */
   buildSessionRenameCommand?(title: string): string;
+}
+
+export interface DetectedModelCatalogEntry {
+  readonly slug: string;
+  readonly reasoningEfforts?: readonly string[];
+  readonly defaultReasoningEffort?: string;
 }
 
 export type CliId = 'claude-code' | 'seed' | 'relay' | 'aiden' | 'coco' | 'codex' | 'codex-app' | 'cursor' | 'gemini' | 'genius' | 'opencode' | 'opencode2' | 'mimocode' | 'antigravity' | 'mtr' | 'hermes' | 'mira' | 'mir' | 'traex' | 'pi' | 'copilot' | 'oh-my-pi' | 'ebsd' | 'kimi' | 'grok' | 'kiro-cli' | 'riff' | 'reasonix' | 'dsh' | 'dsh-tui' | 'mojo' | 'minimax' | 'remote-runner';

@@ -13,14 +13,16 @@
  *   2. 路由接线（路径、400 错误码、helper 调用、与 /api/cli-options 的相邻位置、
  *      cli-options 新增 modelChoices 字段）用 source-lock 钉住，防止重构时静默走样。
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildModelChoicesResponse,
   isKnownSelectionKey,
 } from '../src/services/model-catalog.js';
 import { TTADK_MODEL_SUGGESTIONS } from '../src/setup/cli-selection.js';
+import type { CliAdapter } from '../src/adapters/cli/types.js';
 
 // ─── 400 分支：路由用 isKnownSelectionKey 判定 ──────────────────────────────
 
@@ -81,6 +83,30 @@ describe('GET /api/cli-options/models — 200 响应 shape', () => {
     expect(body.models).toEqual([]);
     expect(body.source).toBe('static');
   });
+
+  it('official Codex endpoint cache follows the resolved default executable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-model-endpoint-runtime-'));
+    const executable = join(dir, 'codex');
+    try {
+      writeFileSync(executable, 'old');
+      let calls = 0;
+      const opts = {
+        resolveExecutable: (command: string) => {
+          expect(command).toBe('codex');
+          return executable;
+        },
+        adapterFactory: () => ({
+          detectModels: async () => [`endpoint-${++calls}`],
+        }) as CliAdapter,
+      };
+      expect((await buildModelChoicesResponse('codex-app', opts)).models).toEqual(['endpoint-1']);
+      writeFileSync(executable, 'new-official-runtime-with-different-size');
+      expect((await buildModelChoicesResponse('codex-app', opts)).models).toEqual(['endpoint-2']);
+      expect(calls).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── Source-lock：dashboard.ts 的路由接线 ───────────────────────────────────
@@ -107,10 +133,12 @@ describe('dashboard.ts 路由接线（source-lock）', () => {
     expect(routeBlock).toContain("jsonRes(res, 400, { ok: false, error: 'unknown_selection_key' })");
   });
 
-  it('200 分支走 buildModelChoicesResponse（静态+live 合并的单一事实源）', () => {
+  it('200 分支携带 Bot runtime 走 buildModelChoicesResponse', () => {
     const routeStart = source.indexOf("url.pathname === '/api/cli-options/models'");
-    const routeBlock = source.slice(routeStart, routeStart + 1200);
-    expect(routeBlock).toContain('buildModelChoicesResponse(key)');
+    const routeBlock = source.slice(routeStart, routeStart + 1800);
+    expect(routeBlock).toContain("url.searchParams.get('appId')");
+    expect(routeBlock).toContain('runtimeExecutableForBotSelection(key, bot)');
+    expect(routeBlock).toContain('buildModelChoicesResponse(key, { runtimeExecutable })');
   });
 
   it('/api/cli-options 每个 option 带 modelChoices 字段（静态候选）', () => {

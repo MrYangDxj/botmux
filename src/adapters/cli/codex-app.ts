@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { CLI_MODEL_CHOICES } from './model-choices.js';
 import { resolveCommandReal } from './registry.js';
-import { parseDebugModelsJson } from './model-catalog-json.js';
+import { parseDebugModelCatalogJson } from './model-catalog-json.js';
 import type { CliAdapter, PtyHandle } from './types.js';
 import { writeRunnerInput } from './runner-input.js';
 import { runnerArgv0 } from '../../core/self-spawn.js';
@@ -92,7 +92,7 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
     // Live 模型枚举：直接 spawn 被 wrap 的 codex binary 跑 `debug models`
     // （resolvedBin 是 node runner 不是 codex，故这里用懒解析的 cachedCodexBin）。
     // 8s 超时、16MB maxBuffer、fail-soft → null，picker 回退上面的静态快照。
-    async detectModels(): Promise<readonly string[] | null> {
+    async detectModelCatalog() {
       try {
         // lazy promisify：顶层 promisify(execFile) 会在部分 mock child_process
         // 的测试 import 阶段炸（mock 无 execFile 导出）；推迟到调用时，fail-soft
@@ -107,11 +107,15 @@ export function createCodexAppAdapter(pathOverride?: string): CliAdapter {
           maxBuffer: 16 * 1024 * 1024,
           windowsHide: true,
         });
-        const models = parseDebugModelsJson(stdout);
-        return models.length > 0 ? models : null;
+        const catalog = parseDebugModelCatalogJson(stdout);
+        return catalog.length > 0 ? catalog : null;
       } catch {
         return null;
       }
+    },
+    async detectModels(): Promise<readonly string[] | null> {
+      const catalog = await this.detectModelCatalog?.();
+      return catalog ? catalog.map(entry => entry.slug) : null;
     },
 
     buildResumeCommand() {

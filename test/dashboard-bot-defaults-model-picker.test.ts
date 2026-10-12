@@ -26,6 +26,12 @@ describe('ModelPickerField 源码接线', () => {
     expect(agentSection).toContain('dataInput="agentModel"');
   });
 
+  it('Bot runtime 改变但 cliKey 不变时清空并重新探测模型目录', () => {
+    const agentSection = page.slice(page.indexOf('export function BotAgentSection'));
+    expect(agentSection).toContain('setDetectedModels(null);');
+    expect(agentSection).toContain('[bot.larkAppId, bot.cliLaunchMode, bot.wrapperCli, cliKey, runtimeConfigKey]');
+  });
+
   it('onboarding 也使用 ModelPickerField', () => {
     expect(onboarding).toContain("import { ModelPickerField } from './bot-defaults-page.js';");
     expect(onboarding).toContain('<ModelPickerField');
@@ -48,12 +54,12 @@ describe('ModelPickerField 源码接线', () => {
 });
 
 describe('mergeModelCandidates', () => {
-  it('detected 优先：detected 在前，static 中缺失的补在末尾', () => {
-    expect(mergeModelCandidates(['a', 'b'], ['b', 'c', 'd'])).toEqual(['b', 'c', 'd', 'a']);
+  it('detected 非空时使用 runtime 权威目录', () => {
+    expect(mergeModelCandidates(['a', 'b'], ['b', 'c', 'd'])).toEqual(['b', 'c', 'd']);
   });
 
   it('去重保序', () => {
-    expect(mergeModelCandidates(['a', 'a', 'b'], ['b', 'b', 'c'])).toEqual(['b', 'c', 'a']);
+    expect(mergeModelCandidates(['a', 'a', 'b'], ['b', 'b', 'c'])).toEqual(['b', 'c']);
   });
 
   it('detected 为 null/undefined 时回退 static', () => {
@@ -97,12 +103,19 @@ describe('fetchDetectedModels (fail-soft)', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('200 返回 models 与 source', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => ({
+    const fetchSpy = vi.fn(async () => ({
       ok: true,
       status: 200,
-      json: async () => ({ models: ['a', 'b'], source: 'live', detectedAt: 123 }),
-    })));
-    expect(await fetchDetectedModels('codex')).toEqual({ models: ['a', 'b'], source: 'live' });
+      json: async () => ({
+        models: ['a', 'b'], source: 'live', detectedAt: 123,
+        reasoningEffortsByModel: { a: ['low', 'ultra'] },
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(await fetchDetectedModels('codex', 'cli_mkk')).toEqual({
+      models: ['a', 'b'], source: 'live', reasoningEffortsByModel: { a: ['low', 'ultra'] },
+    });
+    expect(fetchSpy).toHaveBeenCalledWith('/api/cli-options/models?key=codex&appId=cli_mkk');
   });
 
   it('过滤非字符串项；source 非 live 归为 static', async () => {

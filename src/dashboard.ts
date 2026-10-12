@@ -167,6 +167,7 @@ import {
   staticModelChoices,
   isKnownSelectionKey,
   buildModelChoicesResponse,
+  runtimeExecutableForBotSelection,
 } from './services/model-catalog.js';
 import { checkCliAvailability } from './setup/cli-availability.js';
 import { invalidWorkingDirs } from './utils/working-dir.js';
@@ -5639,7 +5640,18 @@ const server = createServer(async (req, res) => {
       if (!isKnownSelectionKey(key)) {
         return jsonRes(res, 400, { ok: false, error: 'unknown_selection_key' });
       }
-      const body = await buildModelChoicesResponse(key);
+      const appId = (url.searchParams.get('appId') ?? '').trim();
+      let runtimeExecutable: string | undefined;
+      if (appId) {
+        try {
+          const bot = loadBotConfigs().find(candidate => candidate.larkAppId === appId);
+          runtimeExecutable = runtimeExecutableForBotSelection(key, bot);
+        } catch {
+          // Invalid/missing bot context is fail-soft: use the selected CLI's
+          // default runtime, matching the endpoint's existing behavior.
+        }
+      }
+      const body = await buildModelChoicesResponse(key, { runtimeExecutable });
       return jsonRes(res, 200, body);
     }
 

@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { CLI_MODEL_CHOICES } from './model-choices.js';
 import { resolveCommand } from './registry.js';
 import { BOTMUX_SHELL_HINTS } from './shared-hints.js';
-import { parseDebugModelsJson } from './model-catalog-json.js';
+import { parseDebugModelCatalogJson } from './model-catalog-json.js';
 import type { CliAdapter, PtyHandle } from './types.js';
 import { codexHistoryPath, codexHome, codexSessionsRoot } from '../../services/codex-paths.js';
 import { findCodexRolloutSetByPid } from '../../services/codex-transcript.js';
@@ -642,7 +642,7 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
     // 数百 KB，故 maxBuffer 给到 16MB、8s 超时兜底。仅 dashboard 在用户选中
     // codex 时按需调用，不在 daemon/worker 启动路径上；任何异常（spawn 失败/
     // 超时/输出非法）一律 fail-soft 返回 null，picker 回退到上面的 modelChoices。
-    async detectModels(): Promise<readonly string[] | null> {
+    async detectModelCatalog() {
       try {
         // lazy promisify：顶层 promisify(execFile) 会在部分 mock child_process
         // 的测试 import 阶段炸（mock 无 execFile 导出）；推迟到调用时，fail-soft
@@ -653,11 +653,15 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
           maxBuffer: 16 * 1024 * 1024,
           windowsHide: true,
         });
-        const models = parseDebugModelsJson(stdout);
-        return models.length > 0 ? models : null;
+        const catalog = parseDebugModelCatalogJson(stdout);
+        return catalog.length > 0 ? catalog : null;
       } catch {
         return null;
       }
+    },
+    async detectModels(): Promise<readonly string[] | null> {
+      const catalog = await this.detectModelCatalog?.();
+      return catalog ? catalog.map(entry => entry.slug) : null;
     },
   };
 }

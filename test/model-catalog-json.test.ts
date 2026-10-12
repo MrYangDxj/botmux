@@ -4,7 +4,7 @@
  * 三个适配器的 detectModels 都复用它，过滤/容错行为在这里统一覆盖。
  */
 import { describe, it, expect } from 'vitest';
-import { parseDebugModelsJson } from '../src/adapters/cli/model-catalog-json.js';
+import { parseDebugModelCatalogJson, parseDebugModelsJson } from '../src/adapters/cli/model-catalog-json.js';
 
 const REAL_SHAPE = (models: unknown[]) => JSON.stringify({ models });
 const modelEntry = (slug: string, visibility: string = 'list') => ({
@@ -15,6 +15,25 @@ const modelEntry = (slug: string, visibility: string = 'list') => ({
 });
 
 describe('parseDebugModelsJson', () => {
+  it('保留每个模型声明的 reasoning levels，并过滤未知 effort', () => {
+    const out = parseDebugModelCatalogJson(REAL_SHAPE([
+      {
+        ...modelEntry('gpt-6.1-sol'),
+        supported_reasoning_levels: [
+          { effort: 'low', description: 'fast' },
+          { effort: 'ultra', description: 'delegates' },
+          { effort: 'future-level', description: 'not understood by botmux' },
+        ],
+        default_reasoning_level: 'low',
+      },
+    ]));
+    expect(out).toEqual([{
+      slug: 'gpt-6.1-sol',
+      reasoningEfforts: ['low', 'ultra'],
+      defaultReasoningEffort: 'low',
+    }]);
+  });
+
   it('真实 shape：两个 visibility=list 模型 → 按原顺序返回 slug', () => {
     const out = parseDebugModelsJson(
       REAL_SHAPE([modelEntry('Seed-Evolving'), modelEntry('gpt-5.5')]),

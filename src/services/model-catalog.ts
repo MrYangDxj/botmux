@@ -13,14 +13,21 @@
  */
 import {
   lookupCliSelection,
+  resolveCliSelection,
+  selectionKeyForBot,
   isTtadkWrapper,
   ttadkAcceptsModel,
   TTADK_MODEL_SUGGESTIONS,
 } from '../setup/cli-selection.js';
-import { createCliAdapterSync } from '../adapters/cli/registry.js';
+import { createCliAdapterSync, rawCliExecutable, resolveCommand } from '../adapters/cli/registry.js';
 import { CLI_MODEL_CHOICES } from '../adapters/cli/model-choices.js';
-import type { CliAdapter, CliId } from '../adapters/cli/types.js';
+import type { CliAdapter, CliId, DetectedModelCatalogEntry } from '../adapters/cli/types.js';
+import { realpathSync, statSync } from 'node:fs';
 import { detectAidenCodexModels } from './aiden-model-catalog.js';
+import {
+  isCodexReasoningEffort,
+  reasoningEffortsForCliModel,
+} from './codex-reasoning-effort.js';
 
 export type ModelSource = 'static' | 'live';
 
@@ -32,9 +39,38 @@ export interface DetectModelsOptions {
   /** 时钟注入（TTL 判定用），默认 Date.now。 */
   readonly now?: () => number;
   /** 适配器工厂注入，默认 createCliAdapterSync。 */
-  readonly adapterFactory?: (cliId: CliId) => CliAdapter;
+  readonly adapterFactory?: (cliId: CliId, pathOverride?: string) => CliAdapter;
+  /** Trusted executable selected from the target Bot's persisted runtime. */
+  readonly runtimeExecutable?: string;
+  /** Command resolver injection for deterministic cache-identity tests. */
+  readonly resolveExecutable?: (command: string) => string;
   /** Aiden AIPROXY 探测器注入，默认调用 `aiden x models --codex --json`。 */
   readonly aidenCodexDetector?: () => Promise<readonly string[] | null>;
+}
+
+export interface PersistedBotRuntimeSelection {
+  readonly cliId: CliId;
+  readonly cliRuntime?: { readonly executable: string } | null;
+  readonly cliPathOverride?: string | null;
+  readonly wrapperCli?: string | null;
+  readonly cliLaunchMode?: import('../core/cli-launch-mode.js').CliLaunchMode | null;
+}
+
+/**
+ * Return a trusted executable only when the requested catalog key describes
+ * the Bot's exact persisted native launch shape. Wrapper and special launch
+ * modes own their executable, so a legacy raw override must never leak into an
+ * underlying adapter probe.
+ */
+export function runtimeExecutableForBotSelection(
+  key: string,
+  bot: PersistedBotRuntimeSelection | null | undefined,
+): string | undefined {
+  if (!bot) return undefined;
+  const selected = resolveCliSelection(key);
+  const persistedSelection = selectionKeyForBot(bot.cliId, bot.wrapperCli ?? undefined, bot.cliLaunchMode ?? undefined);
+  if (persistedSelection !== key || selected.wrapperCli || selected.cliLaunchMode) return undefined;
+  return bot.cliRuntime?.executable ?? bot.cliPathOverride ?? undefined;
 }
 
 // ─── 静态候选 ────────────────────────────────────────────────────────────────
@@ -68,7 +104,25 @@ export function staticModelChoices(key: string): readonly string[] {
 interface DetectCacheEntry {
   /** 探测完成时刻（epoch millis）。 */
   readonly at: number;
-  readonly models: readonly string[];
+  readonly catalog: readonly DetectedModelCatalogEntry[];
+}
+
+function runtimeCacheIdentity(
+  executable: string | undefined,
+  resolveExecutable: (command: string) => string,
+): string {
+  if (!executable) return 'default';
+  try {
+    // Keep cache identity aligned with the adapter's launch resolution. A bare
+    // command such as `codex` must fingerprint the executable currently found
+    // on PATH, not the unresolved string (which would remain stable across an
+    // in-place runtime upgrade).
+    const resolved = realpathSync(resolveExecutable(executable));
+    const stat = statSync(resolved);
+    return `${resolved}:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return executable;
+  }
 }
 
 /**
@@ -76,51 +130,58 @@ interface DetectCacheEntry {
  * {@link createModelCatalog} 给需要隔离缓存的测试用。
  * 绝不抛异常：未知 key / ttadk 网关项 / 适配器无 detectModels / 任何异常 → null。
  */
-async function detectModelsWith(
+async function detectModelCatalogWith(
   key: string,
   opts: DetectModelsOptions | undefined,
   cache: Map<string, DetectCacheEntry>,
-  inFlight: Map<string, Promise<readonly string[] | null>>,
-): Promise<readonly string[] | null> {
+  inFlight: Map<string, Promise<readonly DetectedModelCatalogEntry[] | null>>,
+): Promise<readonly DetectedModelCatalogEntry[] | null> {
   const now = opts?.now ?? (() => Date.now());
-  const factory = opts?.adapterFactory ?? ((cliId: CliId) => createCliAdapterSync(cliId));
+  const factory = opts?.adapterFactory ?? ((cliId: CliId, pathOverride?: string) => createCliAdapterSync(cliId, pathOverride));
   try {
     const opt = lookupCliSelection(key);
     // 未知 key / ttadk 网关项（模型由网关建议列表承载，不探测底层 CLI）→ null。
-    if (!opt || isTtadkWrapper(opt.wrapperCli)) return null;
+    if (!opt || (opt.wrapperCli && opt.key !== 'aiden-x-codex')) return null;
 
-    // TTL 内的成功缓存直接复用。
-    const cached = cache.get(opt.key);
+    const cacheKey = `${opt.key}\0${runtimeCacheIdentity(
+      opts?.runtimeExecutable ?? rawCliExecutable(opt.cliId),
+      opts?.resolveExecutable ?? resolveCommand,
+    )}`;
+    // TTL 内的成功缓存直接复用。runtime identity includes path plus file
+    // size/mtime, so replacing an executable at the same path invalidates it.
+    const cached = cache.get(cacheKey);
     if (cached && now() - cached.at < MODEL_DETECT_TTL_MS) {
-      return cached.models;
+      return cached.catalog;
     }
 
     // 同一 key 并发调用复用 in-flight Promise（去重）。
-    const pending = inFlight.get(opt.key);
+    const pending = inFlight.get(cacheKey);
     if (pending) return pending;
 
-    const promise = (async (): Promise<readonly string[] | null> => {
+    const promise = (async (): Promise<readonly DetectedModelCatalogEntry[] | null> => {
       try {
-        const models = opt.key === 'aiden-x-codex'
-          ? await (opts?.aidenCodexDetector ?? detectAidenCodexModels)()
+        const catalog = opt.key === 'aiden-x-codex'
+          ? (await (opts?.aidenCodexDetector ?? detectAidenCodexModels)())?.map(slug => ({ slug })) ?? null
           : await (async () => {
-            const adapter = factory(opt.cliId);
+            const adapter = factory(opt.cliId, opts?.runtimeExecutable);
+            if (adapter.detectModelCatalog) return adapter.detectModelCatalog();
             // 适配器未声明 detectModels = 该 CLI 无法枚举模型 → null。
-            return adapter.detectModels ? adapter.detectModels() : null;
+            const models = adapter.detectModels ? await adapter.detectModels() : null;
+            return models?.map(slug => ({ slug })) ?? null;
           })();
         // 只缓存非空成功结果；失败（null/空数组/异常）不缓存，下次调用重试。
-        if (models && models.length > 0) {
-          cache.set(opt.key, { at: now(), models: [...models] });
+        if (catalog && catalog.length > 0) {
+          cache.set(cacheKey, { at: now(), catalog: [...catalog] });
         }
-        return models;
+        return catalog;
       } catch {
         return null;
       } finally {
-        inFlight.delete(opt.key);
+        inFlight.delete(cacheKey);
       }
     })();
 
-    inFlight.set(opt.key, promise);
+    inFlight.set(cacheKey, promise);
     return promise;
   } catch {
     return null;
@@ -129,7 +190,7 @@ async function detectModelsWith(
 
 /** 进程级单例的缓存表（生产路径共用）。 */
 const singletonCache = new Map<string, DetectCacheEntry>();
-const singletonInFlight = new Map<string, Promise<readonly string[] | null>>();
+const singletonInFlight = new Map<string, Promise<readonly DetectedModelCatalogEntry[] | null>>();
 
 /**
  * On-demand live 探测（异步，fail-soft，绝不抛异常）。
@@ -142,7 +203,8 @@ export function detectModels(
   key: string,
   opts?: DetectModelsOptions,
 ): Promise<readonly string[] | null> {
-  return detectModelsWith(key, opts, singletonCache, singletonInFlight);
+  return detectModelCatalogWith(key, opts, singletonCache, singletonInFlight)
+    .then(catalog => catalog?.map(entry => entry.slug) ?? null);
 }
 
 /**
@@ -155,41 +217,33 @@ export interface ModelCatalog {
 
 export function createModelCatalog(): ModelCatalog {
   const cache = new Map<string, DetectCacheEntry>();
-  const inFlight = new Map<string, Promise<readonly string[] | null>>();
+  const inFlight = new Map<string, Promise<readonly DetectedModelCatalogEntry[] | null>>();
   return {
     detectModels: (key: string, opts?: DetectModelsOptions) =>
-      detectModelsWith(key, opts, cache, inFlight),
+      detectModelCatalogWith(key, opts, cache, inFlight)
+        .then(catalog => catalog?.map(entry => entry.slug) ?? null),
   };
 }
 
 // ─── 合并 ────────────────────────────────────────────────────────────────────
 
 /**
- * 合并静态 + live：静态顺序在前，live 多出的追加在后，整体去重。
- * live 为 null 或空数组 → source='static'，否则 source='live'。
+ * live 非空时视为当前 runtime 的权威目录；只有探测不可用时才回退静态候选。
  */
 export function mergeModelChoices(
   staticChoices: readonly string[],
   live: readonly string[] | null,
 ): { models: string[]; source: ModelSource } {
+  const candidates = live && live.length > 0 ? live : staticChoices;
   const models: string[] = [];
   const seen = new Set<string>();
-  for (const m of staticChoices) {
+  for (const m of candidates) {
     if (!seen.has(m)) {
       seen.add(m);
       models.push(m);
     }
   }
-  if (live && live.length > 0) {
-    for (const m of live) {
-      if (!seen.has(m)) {
-        seen.add(m);
-        models.push(m);
-      }
-    }
-    return { models, source: 'live' };
-  }
-  return { models, source: 'static' };
+  return { models, source: live && live.length > 0 ? 'live' : 'static' };
 }
 
 // ─── dashboard 端点辅助 ──────────────────────────────────────────────────────
@@ -205,6 +259,7 @@ export interface ModelChoicesResponse {
   readonly models: string[];
   readonly source: ModelSource;
   readonly detectedAt: number;
+  readonly reasoningEffortsByModel?: Readonly<Record<string, readonly string[]>>;
 }
 
 export async function buildModelChoicesResponse(
@@ -213,7 +268,32 @@ export async function buildModelChoicesResponse(
 ): Promise<ModelChoicesResponse> {
   const now = opts?.now ?? (() => Date.now());
   const staticChoices = staticModelChoices(key);
-  const live = await detectModels(key, opts);
+  const catalog = await detectModelCatalogWith(key, opts, singletonCache, singletonInFlight);
+  const live = catalog?.map(entry => entry.slug) ?? null;
   const { models, source } = mergeModelChoices(staticChoices, live);
-  return { models, source, detectedAt: now() };
+  const selectedCliId = lookupCliSelection(key)?.cliId;
+  const reasoningEffortsByModel = Object.fromEntries(
+    (catalog ?? [])
+      .map(entry => {
+        const detected = (entry.reasoningEfforts ?? []).filter(isCodexReasoningEffort);
+        const enforced = reasoningEffortsForCliModel(selectedCliId, entry.slug);
+        // Runtime metadata is exposed to the picker only when it exactly
+        // attests the synchronous control-plane policy used by every save,
+        // schedule and trigger path. If a future runtime drifts, omit the live
+        // row so the UI and all non-UI callers deliberately share the static
+        // fallback instead of offering a value that another path rejects.
+        return detected.length > 0
+          && detected.length === enforced.length
+          && detected.every((effort, index) => effort === enforced[index])
+          ? [entry.slug, detected] as const
+          : null;
+      })
+      .filter((entry): entry is readonly [string, import('./codex-reasoning-effort.js').CodexReasoningEffort[]] => entry !== null),
+  );
+  return {
+    models,
+    source,
+    detectedAt: now(),
+    ...(Object.keys(reasoningEffortsByModel).length > 0 ? { reasoningEffortsByModel } : {}),
+  };
 }

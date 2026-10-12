@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   MODEL_DETECT_TTL_MS,
   buildModelChoicesResponse,
   createModelCatalog,
   detectModels,
   mergeModelChoices,
+  runtimeExecutableForBotSelection,
   staticModelChoices,
 } from '../src/services/model-catalog.js';
 import { TTADK_MODEL_SUGGESTIONS } from '../src/setup/cli-selection.js';
@@ -25,7 +29,10 @@ describe('staticModelChoices（静态候选，shell-free）', () => {
 
   it('codex 返回其静态候选', () => {
     const models = staticModelChoices('codex');
-    expect(models).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.2']);
+    expect(models).toEqual([
+      'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
+      'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+    ]);
   });
 
   it('codex-app 与 codex 共享同一模型目录快照', () => {
@@ -64,15 +71,15 @@ describe('staticModelChoices（静态候选，shell-free）', () => {
 });
 
 describe('mergeModelChoices（合并去重）', () => {
-  it('静态在前、live 增量追加在后，整体去重保序', () => {
+  it('live 非空时使用 runtime 权威目录并去重保序', () => {
     const { models, source } = mergeModelChoices(['a', 'b', 'a'], ['b', 'c', 'd']);
-    expect(models).toEqual(['a', 'b', 'c', 'd']);
+    expect(models).toEqual(['b', 'c', 'd']);
     expect(source).toBe('live');
   });
 
   it('live 与静态完全重叠时仍标 live（live 非空即 live）', () => {
     const { models, source } = mergeModelChoices(['a', 'b'], ['b']);
-    expect(models).toEqual(['a', 'b']);
+    expect(models).toEqual(['b']);
     expect(source).toBe('live');
   });
 
@@ -144,6 +151,105 @@ describe('detectModels（live 探测，fail-soft）', () => {
     now += 2;
     expect(await catalog.detectModels('codex', opts)).toEqual(['m1', 'm2']);
     expect(calls).toBe(2);
+  });
+
+  it('按 Bot 配置的 executable 探测，并隔离不同 runtime 的缓存', async () => {
+    const catalog = createModelCatalog();
+    const calls: Array<{ cliId: string; executable?: string }> = [];
+    const factory = (cliId: any, executable?: string) => {
+      calls.push({ cliId, executable });
+      return fakeAdapter(async () => executable?.includes('new') ? ['gpt-6.1-sol'] : ['gpt-5.2']);
+    };
+
+    expect(await catalog.detectModels('codex', {
+      runtimeExecutable: '/opt/old/codex', adapterFactory: factory,
+    })).toEqual(['gpt-5.2']);
+    expect(await catalog.detectModels('codex', {
+      runtimeExecutable: '/opt/new/codex', adapterFactory: factory,
+    })).toEqual(['gpt-6.1-sol']);
+    expect(await catalog.detectModels('codex', {
+      runtimeExecutable: '/opt/old/codex', adapterFactory: factory,
+    })).toEqual(['gpt-5.2']);
+    expect(calls).toEqual([
+      { cliId: 'codex', executable: '/opt/old/codex' },
+      { cliId: 'codex', executable: '/opt/new/codex' },
+    ]);
+  });
+
+  it('裸命令按实际解析目标做缓存指纹，原地替换后重新探测', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-model-runtime-'));
+    const executable = join(dir, 'codex');
+    try {
+      writeFileSync(executable, 'old');
+      const catalog = createModelCatalog();
+      let calls = 0;
+      const factory = () => fakeAdapter(async () => [`catalog-${++calls}`]);
+      const opts = {
+        runtimeExecutable: 'codex',
+        resolveExecutable: () => executable,
+        adapterFactory: factory,
+      };
+
+      expect(await catalog.detectModels('codex', opts)).toEqual(['catalog-1']);
+      writeFileSync(executable, 'new-runtime-with-different-size');
+      expect(await catalog.detectModels('codex', opts)).toEqual(['catalog-2']);
+      expect(calls).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('official runtime 未配置 override 时也按默认命令的实际目标失效缓存', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botmux-model-default-runtime-'));
+    const executable = join(dir, 'codex');
+    try {
+      writeFileSync(executable, 'old');
+      const catalog = createModelCatalog();
+      let calls = 0;
+      const opts = {
+        resolveExecutable: (command: string) => {
+          expect(command).toBe('codex');
+          return executable;
+        },
+        adapterFactory: () => fakeAdapter(async () => [`official-${++calls}`]),
+      };
+
+      expect(await catalog.detectModels('codex', opts)).toEqual(['official-1']);
+      writeFileSync(executable, 'new-official-runtime-with-different-size');
+      expect(await catalog.detectModels('codex', opts)).toEqual(['official-2']);
+      expect(calls).toBe(2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('wrapper 选择不把 legacy raw override 当成实际运行时探测', async () => {
+    expect(runtimeExecutableForBotSelection('cjadk-x-codex', {
+      cliId: 'codex',
+      wrapperCli: 'cjadk codex',
+      cliPathOverride: '/legacy/raw/codex',
+    })).toBeUndefined();
+
+    const catalog = createModelCatalog();
+    let calls = 0;
+    expect(await catalog.detectModels('cjadk-x-codex', {
+      runtimeExecutable: '/legacy/raw/codex',
+      adapterFactory: () => {
+        calls++;
+        return fakeAdapter(async () => ['wrong-runtime-model']);
+      },
+    })).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  it('仅精确匹配的 native Bot 选择可提供 runtime executable', () => {
+    const bot = {
+      cliId: 'codex' as const,
+      cliRuntime: { executable: '/opt/codex-app' },
+      cliPathOverride: '/legacy/codex',
+    };
+    expect(runtimeExecutableForBotSelection('codex', bot)).toBe('/opt/codex-app');
+    expect(runtimeExecutableForBotSelection('codex-app', bot)).toBeUndefined();
   });
 
   it('同一 key 并发调用 in-flight 去重（只探测一次）', async () => {
@@ -251,10 +357,36 @@ describe('buildModelChoicesResponse（端点 200 响应体构造）', () => {
     // 单例上碰它，故单例缓存残留不影响其它断言）。
     const factory = () => fakeAdapter(async () => ['gemini-2.5-flash', 'brand-new-model']);
     const body = await buildModelChoicesResponse('gemini', { now: () => 99_000, adapterFactory: factory });
-    expect(body.models[0]).toBe('gemini-2.5-pro'); // 静态候选保持在前
-    expect(body.models).toContain('gemini-2.5-flash'); // 静态已有 → 去重
-    expect(body.models).toContain('brand-new-model'); // live 增量追加
+    expect(body.models).toEqual(['gemini-2.5-flash', 'brand-new-model']);
     expect(body.source).toBe('live');
     expect(body.detectedAt).toBe(99_000);
+  });
+
+  it('返回 live catalog 的逐模型 reasoning levels', async () => {
+    const body = await buildModelChoicesResponse('codex', {
+      adapterFactory: () => ({
+        detectModelCatalog: async () => [{
+          slug: 'gpt-6.1-sol',
+          reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          defaultReasoningEffort: 'low',
+        }],
+      }) as CliAdapter,
+    });
+    expect(body.reasoningEffortsByModel).toEqual({
+      'gpt-6.1-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    });
+  });
+
+  it('live reasoning 与统一校验策略不一致时不暴露给 picker', async () => {
+    const body = await buildModelChoicesResponse('codex-app', {
+      adapterFactory: () => ({
+        detectModelCatalog: async () => [{
+          slug: 'future-live-only-model',
+          reasoningEfforts: ['low', 'ultra'],
+        }],
+      }) as CliAdapter,
+    });
+    expect(body.models).toEqual(['future-live-only-model']);
+    expect(body.reasoningEffortsByModel).toBeUndefined();
   });
 });

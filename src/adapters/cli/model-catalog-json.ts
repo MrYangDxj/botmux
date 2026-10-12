@@ -1,3 +1,6 @@
+import { isCodexReasoningEffort } from '../../services/codex-reasoning-effort.js';
+import type { DetectedModelCatalogEntry } from './types.js';
+
 /**
  * 共享的 `xxx debug models` JSON 目录解析。
  *
@@ -14,7 +17,7 @@
  * 单个元素缺 slug、slug 非字符串或 visibility 非 'list' 则跳过该元素
  * （一条坏数据不影响其余模型，避免整个目录因单条异常而不可选）。
  */
-export function parseDebugModelsJson(stdout: string): string[] {
+export function parseDebugModelCatalogJson(stdout: string): DetectedModelCatalogEntry[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -24,14 +27,32 @@ export function parseDebugModelsJson(stdout: string): string[] {
   if (typeof parsed !== 'object' || parsed === null) return [];
   const models = (parsed as { models?: unknown }).models;
   if (!Array.isArray(models)) return [];
-  const slugs: string[] = [];
+  const entries: DetectedModelCatalogEntry[] = [];
   for (const entry of models) {
     if (typeof entry !== 'object' || entry === null) continue;
     const slug = (entry as { slug?: unknown }).slug;
     const visibility = (entry as { visibility?: unknown }).visibility;
     if (typeof slug !== 'string' || slug.length === 0) continue;
     if (visibility !== 'list') continue;
-    slugs.push(slug);
+    const rawLevels = (entry as { supported_reasoning_levels?: unknown }).supported_reasoning_levels;
+    const reasoningEfforts = Array.isArray(rawLevels)
+      ? rawLevels
+        .map(level => typeof level === 'object' && level !== null
+          ? (level as { effort?: unknown }).effort
+          : undefined)
+        .filter(isCodexReasoningEffort)
+      : [];
+    const rawDefault = (entry as { default_reasoning_level?: unknown }).default_reasoning_level;
+    entries.push({
+      slug,
+      ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
+      ...(isCodexReasoningEffort(rawDefault) ? { defaultReasoningEffort: rawDefault } : {}),
+    });
   }
-  return slugs;
+  return entries;
+}
+
+/** Backward-compatible slug-only view. */
+export function parseDebugModelsJson(stdout: string): string[] {
+  return parseDebugModelCatalogJson(stdout).map(entry => entry.slug);
 }
