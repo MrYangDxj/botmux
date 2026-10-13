@@ -1,5 +1,6 @@
 import type { BotConfig } from '../bot-registry.js';
 import { botInjectedEnv, buildSessionChildEnv } from '../core/env-policy.js';
+import { runtimeExecutableForBotSelection } from '../services/model-catalog.js';
 import {
   lookupCliSelection,
   lookupCliSelectionForBotShape,
@@ -32,9 +33,7 @@ export function modelCatalogProbeContext(
     && requestedSelection !== undefined
     && persistedSelection?.key === requestedSelection.key;
   const runtimeExecutable = runtimeApplies
-    && !persistedSelection.wrapperCli
-    && !persistedSelection.cliLaunchMode
-    ? botConfig.cliRuntime?.executable ?? botConfig.cliPathOverride ?? undefined
+    ? runtimeExecutableForBotSelection(key, botConfig)
     : undefined;
   return {
     cliId,

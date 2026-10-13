@@ -124,6 +124,20 @@ describe('GET /api/cli-options/models — Bot runtime 上下文', () => {
     }
   });
 
+  it.each([
+    ['cjadk-x-codex', { cliId: 'codex', wrapperCli: 'cjadk codex' }],
+    ['forge-x-traex', { cliId: 'traex', cliLaunchMode: 'forge-traex' }],
+  ] as const)('%s 不把 Bot override 当作底层适配器 executable', (key, selection) => {
+    const bot = {
+      larkAppId: `cli_${key}`,
+      ...selection,
+      cliPathOverride: '/bot/bin',
+    } as BotConfig;
+
+    expect(modelCatalogProbeContext(key, bot, { PATH: '/system/bin' }).runtimeExecutable)
+      .toBeUndefined();
+  });
+
   it('未知 wrapper 请求原生 key 时不注入 Bot env、runtimeContext 或 override', () => {
     const bot = {
       larkAppId: 'cli_unknown_wrapper',
