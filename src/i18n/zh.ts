@@ -3,6 +3,15 @@
  * "source of truth" dictionary; `en.ts` mirrors the same keys.
  */
 export const messages: Record<string, string> = {
+  'cmd.effort.usage': '/effort <low|medium|high|xhigh|max|ultra> — 修改 Codex App 后续轮次推理强度；更新当前轮需显式启用实验特性 step_model_switching（默认关闭，档位以当前模型为准）',
+  'cmd.effort.applied': '后续轮次的推理强度已设为 {effort}，服务端已接受当前轮更新。若当前轮还有后续推理步骤，可取用新设置；已经发出的模型请求保持原参数。',
+  'cmd.effort.future_only': '后续轮次的推理强度已设为 {effort}；当前轮未确认更新（可能已结束或接口不可用）。',
+  'cmd.effort.step_model_switching_disabled': '后续轮次的推理强度已设为 {effort}；当前轮未更新：Codex 未启用实验特性 step_model_switching（默认关闭，Botmux 不自动开启）。启用条件见 /help 和斜杠命令文档。',
+  'cmd.effort.target_unavailable': '后续轮次的推理强度已设为 {effort}；目标轮次已结束或不可用，当前轮未更新。',
+  'cmd.effort.invalid_without_choices': '当前模型未提供可用的推理档位，无法修改。',
+  'cmd.effort.invalid': '当前模型不支持该档位。可选：{choices}',
+  'cmd.effort.unavailable': '当前 Codex App 连接尚未就绪或正在切换，请稍后重试。',
+  'cmd.effort.error': '未能确认推理强度修改结果，请稍后重试。',
   'worker.steer_accepted': '收到，引导成功',
   // ─── Terminal status pages ───────────────────────────────────────────────
   'terminal.status.starting.title': '终端正在启动',
@@ -1194,6 +1203,8 @@ export const messages: Record<string, string> = {
   'card.action.compact_unsupported': '⚠️ 当前环境不支持卡片压缩，请直接发送 /compact',
   'card.action.close_refused': '会话关闭失败：远端会话未能确认取消（{error}），已保留会话以便重试。远端可能仍在运行，请稍后重试。',
   'card.action.close_refused_with_task': '会话关闭失败：远端会话未能确认取消（{error}），已保留会话以便重试。远端会话 id：{taskId}。远端可能仍在运行，请稍后重试。',
+  'card.action.close_residual': '会话已在本地关闭，但远端会话未取消（{taskId}），需要人工清理。',
+  'card.action.close_residual_local': '会话已在本地关闭、远端会话已取消，但本机可能残留带凭证子进程未确认终止（{taskId}）。请人工核查该主机进程。',
   'card.action.no_output': '(当前无输出内容)',
   'card.action.tui_select_title': 'Select options',
   'card.action.tui_custom_input': 'Custom input',

@@ -1,5 +1,4 @@
 import { isCodexReasoningEffort } from '../../services/codex-reasoning-effort.js';
-import type { DetectedModelCatalogEntry } from './types.js';
 
 /**
  * 共享的 `xxx debug models` JSON 目录解析。
@@ -11,13 +10,21 @@ import type { DetectedModelCatalogEntry } from './types.js';
  */
 
 /**
- * 解析 `debug models` 的 JSON 输出为模型 slug 列表。
+ * 解析 `debug models` 的 JSON 输出为模型能力列表。
  * 过滤：slug 必须为非空字符串，且 visibility === 'list'（隐藏内部模型）。
  * 容错：JSON 非法 / 顶层结构不符 / models 不是数组 → 返回 []；
  * 单个元素缺 slug、slug 非字符串或 visibility 非 'list' 则跳过该元素
  * （一条坏数据不影响其余模型，避免整个目录因单条异常而不可选）。
  */
-export function parseDebugModelCatalogJson(stdout: string): DetectedModelCatalogEntry[] {
+export interface DebugModelCapabilities {
+  slug: string;
+  serviceTiers: string[];
+  reasoningEfforts?: string[];
+  /** Parsed for future default-selection UX; deliberately not sent to Dashboard clients yet. */
+  defaultReasoningEffort?: string;
+}
+
+export function parseDebugModelCapabilitiesJson(stdout: string): DebugModelCapabilities[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
@@ -27,32 +34,49 @@ export function parseDebugModelCatalogJson(stdout: string): DetectedModelCatalog
   if (typeof parsed !== 'object' || parsed === null) return [];
   const models = (parsed as { models?: unknown }).models;
   if (!Array.isArray(models)) return [];
-  const entries: DetectedModelCatalogEntry[] = [];
+  const capabilities: DebugModelCapabilities[] = [];
   for (const entry of models) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const slug = (entry as { slug?: unknown }).slug;
-    const visibility = (entry as { visibility?: unknown }).visibility;
+    const record = entry as {
+      slug?: unknown;
+      visibility?: unknown;
+      service_tiers?: unknown;
+      supported_reasoning_levels?: unknown;
+      default_reasoning_level?: unknown;
+    };
+    const slug = record.slug;
+    const visibility = record.visibility;
     if (typeof slug !== 'string' || slug.length === 0) continue;
     if (visibility !== 'list') continue;
-    const rawLevels = (entry as { supported_reasoning_levels?: unknown }).supported_reasoning_levels;
-    const reasoningEfforts = Array.isArray(rawLevels)
-      ? rawLevels
-        .map(level => typeof level === 'object' && level !== null
+    const serviceTiers = Array.isArray(record.service_tiers)
+      ? record.service_tiers
+        .map(tier => (typeof tier === 'object' && tier !== null
+          ? (tier as { id?: unknown }).id
+          : undefined))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+    const reasoningEfforts = Array.isArray(record.supported_reasoning_levels)
+      ? record.supported_reasoning_levels
+        .map(level => (typeof level === 'object' && level !== null
           ? (level as { effort?: unknown }).effort
-          : undefined)
+          : undefined))
         .filter(isCodexReasoningEffort)
       : [];
-    const rawDefault = (entry as { default_reasoning_level?: unknown }).default_reasoning_level;
-    entries.push({
+    capabilities.push({
       slug,
+      serviceTiers,
       ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
-      ...(isCodexReasoningEffort(rawDefault) ? { defaultReasoningEffort: rawDefault } : {}),
+      ...(isCodexReasoningEffort(record.default_reasoning_level)
+        ? { defaultReasoningEffort: record.default_reasoning_level }
+        : {}),
     });
   }
-  return entries;
+  return capabilities;
 }
 
-/** Backward-compatible slug-only view. */
+/** Backward-compatible rich catalogue name used by callers interested in reasoning metadata. */
+export const parseDebugModelCatalogJson = parseDebugModelCapabilitiesJson;
+
 export function parseDebugModelsJson(stdout: string): string[] {
-  return parseDebugModelCatalogJson(stdout).map(entry => entry.slug);
+  return parseDebugModelCapabilitiesJson(stdout).map(model => model.slug);
 }

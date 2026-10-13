@@ -124,6 +124,8 @@ import {
 } from './services/durable-lark-outbox.js';
 import { enqueueDurableLarkFinalOutput } from './services/durable-lark-final-output.js';
 import { parseDurablePrimarySessionRecord } from './services/durable-session-primary.js';
+import { createDurableLarkSessionControlRuntime } from './services/durable-lark-session-control-runtime.js';
+import { closeResidualIsLocal, describeCloseResidual } from './core/close-residual.js';
 import { shouldRecordFailedTurn, buildFailedTurnRecord } from './services/failed-turn-retry.js';
 import * as chatFirstSeenStore from './services/chat-first-seen-store.js';
 import { ensureDefaultOncallBound } from './services/oncall-store.js';
@@ -332,7 +334,9 @@ import {
   ensureAutomaticTaskContinuationLease,
   ensurePrincipalLaneInboundTurnBinding,
   setDurableBridgeFinalOutputHandler,
+  buildStreamingCardJson,
 } from './core/worker-pool.js';
+import { buildClosedSessionCard } from './core/closed-session-card.js';
 import { waitAllWithin, trackProducerQuiet, trackProcessExited } from './core/producer-quiescence.js';
 import {
   allFinalOutputDeliveryCount,
@@ -493,6 +497,7 @@ import { TmuxBackend } from './adapters/backend/tmux-backend.js';
 import { HerdrBackend } from './adapters/backend/herdr-backend.js';
 import { ZellijBackend } from './adapters/backend/zellij-backend.js';
 import { ZmxBackend } from './adapters/backend/zmx-backend.js';
+import { createGroupIdleCloseSweeper } from './core/group-idle-close-sweeper.js';
 import { sweepIdleWorkersAfterTurnDrain, DEFAULT_MAX_LIVE_WORKERS } from './core/idle-worker-sweeper.js';
 import {
   DEFAULT_SESSION_OWNER_REMINDER,
@@ -18431,6 +18436,9 @@ function buildReservedInitialInput(
         : (ds.pendingTurnId ?? ds.session.pendingRepoSetup?.turnId),
       sessionBackendType: ds.session.backendType,
       promptInjection: sessionPromptInjection(ds),
+      // Reserved initial admission is the fresh launch owned by this session.
+      // Reforks of restored/live workers use the explicit opening paths below.
+      larkToolResume: false,
       // transcript + solo（resolveSoloSessionForTurn 在注册会话后算好）：首轮去壳。
       solo: ds.soloSession,
       selfMention: { name: selfBot.botName, openId: selfBot.botOpenId },
@@ -23492,6 +23500,7 @@ async function executeNewTopicSlash(slash: NewTopicSlashContext): Promise<boolea
   // 透传闸、DAEMON_COMMANDS 与会话政策全在 schema 驱动的一处判定里；下面只按决策执行。
   // 新话题入口不查 activeSessions，相位恒为 none；透传集按 live bot 配置求值（R2）。
   const slashDecision = classifySlash({
+    cliId: getBot(larkAppId).config.cliId,
     text: cmdContent,
     context: 'new-topic',
     phase: 'none',
@@ -26052,6 +26061,11 @@ async function handleThreadReplyAdmitted(
             // sendWorkerInput 的权威 turnId（parsed.messageId）一致，sidecar 可被 claim。
             turnId: parsed.messageId,
             sessionBackendType: ds.session.backendType,
+            // This opening is being delivered to an already-running worker.
+            // Preserve the identity mode that worker was actually launched
+            // with; legacy empty-start sessions can reach this path after a
+            // daemon restore with resume=true and no managed binding.
+            larkToolResume: ds.initConfig?.resume === true,
             promptInjection: sessionPromptInjection(ds),
             solo: ds.soloSession,
             selfMention: { name: selfBot.botName, openId: selfBot.botOpenId },
@@ -26380,6 +26394,7 @@ async function handleThreadReplyAdmitted(
     // its normal `--resume` instead of being cold-spawned over.
     const hadPriorCliInput = !!(ds.lastCliInput ?? ds.session.lastCliInput);
     const openingTurn = wantsOpening && claimInitialUserTurn(ds);
+    const openingResume = ds.hasHistory && !(openingTurn && !hadPriorCliInput);
     // 先选 builder：opening 轮用 buildNewTopicCliInput，非 opening 才 buildRefork。
     // 不能无条件先跑 buildRefork——它现在有副作用（写 follow-up sidecar），opening 时
     // 结果会被 buildNewTopicCliInput 覆盖丢弃，但 sidecar 已写入 opening 的 turnId，
@@ -26413,6 +26428,7 @@ async function handleThreadReplyAdmitted(
           // queued dashboard 场景的 turnId 是合成的，权威流不同，保持 inline。
           turnId: queuedHasDurableTail ? undefined : parsed.messageId,
           sessionBackendType: ds.session.backendType,
+          larkToolResume: openingResume,
           promptInjection: sessionPromptInjection(ds),
         },
       );
@@ -26456,7 +26472,7 @@ async function handleThreadReplyAdmitted(
         userPrompt: promptContent,
         title: stripCrossPrincipalAsToken(parsed.content).text,
         cliInput: wrappedInput,
-        resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+        resume: openingResume,
         ...(codexAppSteerable ? { codexAppSteerable: true as const } : {}),
       });
       markIngressAdmitted(ctx);
@@ -26481,7 +26497,7 @@ async function handleThreadReplyAdmitted(
           caller: threadTrustedCaller,
           userPrompt: promptContent,
           cliInput: wrappedInput,
-          resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+          resume: openingResume,
         });
         markIngressAdmitted(ctx);
         if (openingTurn) releaseInitialUserTurn(ds);
@@ -26518,7 +26534,7 @@ async function handleThreadReplyAdmitted(
                       caller: threadTrustedCaller!,
                       userPrompt: promptContent,
                       cliInput: wrappedInput,
-                      resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+                      resume: openingResume,
                     });
                     if (xpiAdmission.kind !== 'acquired') {
                       throw new Error('XPI shared-cwd admission changed at the adopt reservation boundary');
@@ -26544,7 +26560,7 @@ async function handleThreadReplyAdmitted(
         reforkAccepted = forkWorker(ds, wrappedInput, {
           // See `hadPriorCliInput` above — an opening on a CLI that never took any
           // input cold-spawns rather than `--resume`-ing an empty session.
-          resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+          resume: openingResume,
           turnId: queuedHasDurableTail
             ? (ds.session.queuedActivationTurnId ?? `queued-opening:${ds.session.sessionId}`)
             : parsed.messageId,
@@ -26560,7 +26576,7 @@ async function handleThreadReplyAdmitted(
                     caller: threadTrustedCaller!,
                     userPrompt: promptContent,
                     cliInput: wrappedInput,
-                    resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+                    resume: openingResume,
                   });
                   if (xpiAdmission.kind !== 'acquired') {
                     throw new Error('XPI shared-cwd admission changed at the worker reservation boundary');
@@ -26591,7 +26607,7 @@ async function handleThreadReplyAdmitted(
           caller: threadTrustedCaller,
           userPrompt: promptContent,
           cliInput: wrappedInput,
-          resume: ds.hasHistory && !(openingTurn && !hadPriorCliInput),
+          resume: openingResume,
         });
         markIngressAdmitted(ctx);
       }
@@ -26703,6 +26719,7 @@ async function executeThreadSlash(slash: ThreadSlashContext): Promise<boolean> {
   const slashDecision = ctx.messageListener
     ? null
     : classifySlash({
+      cliId: passthroughCliId,
       text: cmdContent,
       context: 'thread',
       phase: deriveSessionPhase(existingDs),
@@ -28132,6 +28149,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   // 重投，那句话是假的。后果不是晚同步：in_progress 那次写只要失败一次，5 分钟后平台就把
   // 任务打成 needs_attention(claim_activate_timeout)，而那是单向门，群里的活直接废掉。
   // 同时启动时把卡在 inflight 的行退回待发，否则崩溃一次就永久堵死该 binding 的串行队列。
+  if (!existsSync(config.session.dataDir)) {
+    mkdirSync(config.session.dataDir, { recursive: true });
+  }
   startIssueOutboxPump({ dataDir: config.session.dataDir });
 
   // 首次启动时后台尝试安装 CJK 字体（Debian/Ubuntu），避免截图中文显示豆腐块。
@@ -29483,6 +29503,9 @@ export async function startDaemon(botIndex?: number): Promise<void> {
           );
         }
         let primaryRuntime: DurableLarkPrimaryRuntime | undefined;
+        let primaryControlRuntime: ReturnType<
+          typeof createDurableLarkSessionControlRuntime
+        > | undefined;
         const eventRuntime = createLarkEventDispatcherRuntime(
           cfg.larkAppId,
           cfg.larkAppSecret,
@@ -29494,9 +29517,88 @@ export async function startDaemon(botIndex?: number): Promise<void> {
               if (!primaryRuntime) throw new Error('durable primary runtime is not ready');
               return primaryRuntime.ingress.enqueueBeforeAck(input);
             },
+            enqueuePrimaryControl: input => {
+              if (!primaryRuntime) throw new Error('durable primary runtime is not ready');
+              return primaryRuntime.ingress.enqueueControlBeforeAck(input);
+            },
+            authorizePrimaryControl: data =>
+              primaryControlRuntime?.authorizeBeforeAck(data) === true,
           },
         );
         startEventDispatchers.push(() => {
+          primaryControlRuntime = createDurableLarkSessionControlRuntime({
+            larkAppId: cfg.larkAppId,
+            privateCard: cfg.privateCard === true,
+            store: durableCoordinationRuntime.store,
+            facade: () => {
+              if (!primaryRuntime) throw new Error('durable primary runtime is not ready');
+              return primaryRuntime.session;
+            },
+            listActiveSessions: () => activeSessions.values(),
+            findActiveSession: findActiveBySessionId,
+            listPersistedSessions: () => sessionStore.listSessions(),
+            getPersistedSession: sessionId => sessionStore.getOwnedSession(sessionId),
+            canOperate: (chatId, operatorOpenId) =>
+              canOperate(cfg.larkAppId, chatId, operatorOpenId),
+            closeSession: sessionId => closeSessionHelper(sessionId, {
+              awaitWorkerExit: false,
+              cardVisibility: 'public',
+            }),
+            resumeSession: sessionId => resumeSession(sessionId, activeSessions),
+            buildClosedCard: ds => buildClosedSessionCard(ds, localeForBot(cfg.larkAppId)),
+            buildActiveCard: ds => buildStreamingCardJson(
+              ds,
+              ds.session.suspendedColdResume ? 'idle' : undefined,
+            ),
+            closeResidualText: residual => {
+              const loc = localeForBot(cfg.larkAppId);
+              return tr(
+                closeResidualIsLocal(residual)
+                  ? 'card.action.close_residual_local'
+                  : 'card.action.close_residual',
+                { taskId: describeCloseResidual(residual) },
+                loc,
+              );
+            },
+            closeRefusedText: (error, taskId) => {
+              const loc = localeForBot(cfg.larkAppId);
+              return taskId
+                ? tr('card.action.close_refused_with_task', { error, taskId }, loc)
+                : tr('card.action.close_refused', { error }, loc);
+            },
+            resumeRefusedText: (error, activeSessionId, sessionId) => {
+              const loc = localeForBot(cfg.larkAppId);
+              if (error === 'not_found') {
+                return tr('card.action.resume_not_found', {
+                  short: sessionId?.substring(0, 8) ?? '',
+                }, loc);
+              }
+              if (error === 'not_closed') {
+                return tr('card.action.resume_not_closed', undefined, loc);
+              }
+              if (error === 'anchor_occupied') {
+                return tr('card.action.resume_anchor_occupied', {
+                  detail: activeSessionId
+                    ? tr('card.action.resume_anchor_holder', {
+                        short: activeSessionId.substring(0, 8),
+                      }, loc)
+                    : '',
+                }, loc);
+              }
+              const key = error === 'workspace_retired'
+                ? 'card.action.resume_workspace_retired'
+                : error === 'deferred_unmaterialized'
+                  ? 'card.action.resume_deferred_unmaterialized'
+                  : error === 'adopt_unsupported'
+                    ? 'card.action.resume_adopt_unsupported'
+                    : error === 'resume_cancelled'
+                      ? 'card.action.resume_cancelled'
+                      : error === 'resume_reconciliation_required'
+                        ? 'card.action.resume_reconciliation_required'
+                        : 'card.action.resume_start_failed';
+              return tr(key, undefined, loc);
+            },
+          });
           primaryRuntime = startDurableLarkPrimaryRuntime({
             store: durableCoordinationRuntime.store,
             larkAppId: cfg.larkAppId,
@@ -29504,8 +29606,12 @@ export async function startDaemon(botIndex?: number): Promise<void> {
             deliverOutbox: (record, context) => deliverDurableLarkOutbox(
               record,
               context,
-              { sendMessage, replyMessage },
+              { sendMessage, replyMessage, updateMessage },
             ),
+            control: {
+              ownedPartitionKeys: primaryControlRuntime.ownedPartitionKeys,
+              resolve: primaryControlRuntime.resolve,
+            },
             onLeadershipAcquired: () => { eventRuntime.connect(); },
             onLeadershipLost: () => { eventRuntime.close(); },
             onError: error => logger.warn(
@@ -29815,10 +29921,19 @@ export async function startDaemon(botIndex?: number): Promise<void> {
   } catch (err: any) {
     logger.warn(`[sandbox-sweep] failed: ${err?.message ?? err}`);
   }
+  const closeIdleGroupSessions = createGroupIdleCloseSweeper({
+    larkAppId: cfg.larkAppId,
+    sessions: activeSessions,
+    getSettings: chatId => getBot(cfg.larkAppId).config.groupIdleClose?.[chatId],
+    isTransferring: isSessionTransferring,
+    close: closeSessionForBackgroundCleanup,
+    log: message => logger.info(message),
+  });
   const idleWorkerSweepTimer = setInterval(() => {
     // Dashboard config edits need no restart; the timer also backstops any
     // missed lifecycle edge. Normal new/resumed sessions enforce immediately.
     enforceLiveSessionCap('periodic');
+    void closeIdleGroupSessions().catch(error => logger.warn(`[group-idle-close] sweep failed: ${String(error)}`));
   }, 60_000);
   idleWorkerSweepTimer.unref?.();
 

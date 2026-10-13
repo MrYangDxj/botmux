@@ -4,6 +4,7 @@ import type { FeedbackPolicyLayer } from '../../services/feedback-policy-resolve
 import type { ReplyStyleConfig } from '../../im/lark/reply-card-style.js';
 import type { AskOptionLayout } from '../../im/lark/ask-option-layout.js';
 import type { CodexReasoningEffort } from '../../services/codex-reasoning-effort.js';
+import type { CodexServiceTier } from '../../services/codex-service-tier.js';
 import type { StreamingCardButtonId } from '../../im/lark/streaming-card-buttons.js';
 
 export type CliOption = {
@@ -23,6 +24,11 @@ export type CliOptionsState = {
   options: CliOption[];
   ttadkModelDefault: string;
   ttadkModelSuggestions: string[];
+};
+
+export type ModelCapabilities = {
+  slug: string;
+  serviceTiers: string[];
 };
 
 /** Keep the browser payload contract tied to the daemon's canonical schema. */
@@ -74,6 +80,7 @@ export type BotDefaultsRow = {
   model?: string;
   modelBackendVariant?: 'standard' | 'max' | null;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+  serviceTier?: CodexServiceTier;
   nativeSubagentRuntime?: NativeSubagentRuntimePolicy;
   /** dsh runner turn timeout (ms); rendered as a dsh-only field. */
   turnTimeoutMs?: number;
@@ -274,7 +281,7 @@ export function modelSuggestionsForOption(opt: CliOption | undefined, cliState: 
 }
 
 /**
- * live 探测非空时使用当前 runtime 的权威目录；探测缺失/为空时回退 static。
+ * live 探测非空时以 runtime 目录为准；缺失或空时回退 static。纯函数，供单测。
  */
 export function mergeModelCandidates(
   staticChoices: readonly string[],
@@ -292,7 +299,7 @@ export function mergeModelCandidates(
 }
 
 /**
- * 按需探测某个 CLI 当前可用的模型列表（静态精选 + live 探测合并去重）。
+ * 按需探测某个 CLI 当前可用的模型列表（live 成功时权威，失败时回退静态）。
  * fail-soft：任何错误（网络/404/400/形状异常）都返回 null，调用方回退静态候选。
  */
 export async function fetchDetectedModels(
@@ -301,6 +308,7 @@ export async function fetchDetectedModels(
 ): Promise<{
   models: string[];
   source: 'live' | 'static';
+  modelCapabilities?: ModelCapabilities[];
   reasoningEffortsByModel?: Record<string, string[]>;
 } | null> {
   try {
@@ -311,6 +319,15 @@ export async function fetchDetectedModels(
     if (!r.ok || !body || !Array.isArray(body.models)) return null;
     const models = body.models.filter((m: unknown): m is string => typeof m === 'string');
     const source: 'live' | 'static' = body.source === 'live' ? 'live' : 'static';
+    const modelCapabilities = Array.isArray(body.modelCapabilities)
+      ? body.modelCapabilities.flatMap((item: unknown) => {
+          if (typeof item !== 'object' || item === null) return [];
+          const { slug, serviceTiers } = item as { slug?: unknown; serviceTiers?: unknown };
+          if (typeof slug !== 'string' || !Array.isArray(serviceTiers)) return [];
+          const tiers = serviceTiers.filter((tier): tier is string => typeof tier === 'string');
+          return [{ slug, serviceTiers: tiers }];
+        })
+      : undefined;
     const reasoningEffortsByModel = body.reasoningEffortsByModel
       && typeof body.reasoningEffortsByModel === 'object'
       ? Object.fromEntries(Object.entries(body.reasoningEffortsByModel)
@@ -321,6 +338,7 @@ export async function fetchDetectedModels(
     return {
       models,
       source,
+      ...(modelCapabilities ? { modelCapabilities } : {}),
       ...(reasoningEffortsByModel ? { reasoningEffortsByModel } : {}),
     };
   } catch {

@@ -690,6 +690,9 @@ export function prepareDirectSandbox(opts: {
   cliArgs: string[];
   /** Host-backed, per-session scratch directory already admitted by policy. */
   tempDir?: string;
+  /** Final per-bot PATH; the session identity wrapper must precede real tools. */
+  effectivePath?: string;
+  identityBin?: string;
   /** Absolute Botmux command paths already persisted in CLI MCP configs.
    * Bind the worker-generated relay shim at those exact paths so a stale or
    * tampered host wrapper cannot replace the trusted gateway entry. */
@@ -706,6 +709,10 @@ export function prepareDirectSandbox(opts: {
   larkCliDataDir?: string | null;
   /** Keep the large bwrap option list out of tmux's command parser. */
   useBwrapArgsFile?: boolean;
+  /** mcode OAuth keys include the lexical data-directory path. Preserve that
+   * exact alias to its already-granted canonical directory on symlinked homes.
+   * Only the minimax worker supplies this; absent leaves the mount plan intact. */
+  minimaxDataDir?: string;
 }): DirectSandboxSpawn | null {
   if (process.platform !== 'linux') return null;
   const proxyError = networkProxyError(opts.networkPolicy, process.env);
@@ -721,6 +728,21 @@ export function prepareDirectSandbox(opts: {
   // filters using the repeatable form for this opt-in path.
   if (opts.networkPolicy) launch.args = launch.args.map(arg => arg === '--seccomp' ? '--add-seccomp-fd' : arg);
 
+  let minimaxAlias: { path: string; target: string } | undefined;
+  if (opts.minimaxDataDir) {
+    const path = resolve(opts.minimaxDataDir);
+    const target = realpathSync(path);
+    if (path !== target) {
+      const applicable = opts.policy.rules.filter(r => target === r.path || target.startsWith(`${r.path}/`))
+        .sort((a, b) => a.path.length - b.path.length);
+      if (!statSync(target).isDirectory() || applicable.at(-1)?.access !== 'readWrite'
+        || !opts.policy.rules.some(r => r.path === target && r.access === 'readWrite')
+        || opts.policy.rules.some(r => r.path === path || r.path.startsWith(`${path}/`))) {
+        throw new Error('mcode sandbox data alias requires its exact canonical writable grant');
+      }
+      minimaxAlias = { path, target };
+    }
+  }
   const dataDir = canonical(opts.dataDir);
   const sessionRoot = join(dataDir, 'sandboxes', opts.sessionId);
   const outbox = join(sessionRoot, 'outbox');
@@ -755,6 +777,14 @@ export function prepareDirectSandbox(opts: {
   }
 
   const compiled = compileToBwrap(opts.policy, { symlinks, emptyDir, emptiesDir: empties, filePaths, chdir: opts.chdir, skipPidNamespace: coreOnlyPidNamespaceDegrade() });
+  if (minimaxAlias) {
+    // After tmpfs setup and before any host binds. Parent directories are
+    // empty namespace scaffolding; the alias grants no additional host path.
+    const index = compiled.args.indexOf('/dev/shm') + 1;
+    if (!index) throw new Error('mcode sandbox data alias requires the initial tmpfs mount plan');
+    compiled.args.splice(index, 0,
+      '--dir', dirname(minimaxAlias.path), '--symlink', minimaxAlias.target, minimaxAlias.path);
+  }
   // The shared empty dir + every empty placeholder file are the ro-bind SOURCES
   // for deny masks: real content hidden + read-only. mode 000 additionally makes
   // the mask unlistable for a NON-root uid (a real deny, not a listable "empty");
@@ -874,7 +904,8 @@ export function prepareDirectSandbox(opts: {
   // root — so the trusted `botmux` shim's bare `node` would fail `not found`
   // and the MCP gateway would exit (Connection closed). Prepend the canonical
   // dirs of node + the CLI bin (deduped) so bare-name resolution always hits a
-  // bound path, THEN keep the host PATH as a lexical fallback.
+  // bound path. Keep the session identity entry ahead of those dirs and resolve
+  // the effective per-bot PATH in the same namespace as the mounted paths.
   const canonicalExecDirs: string[] = [];
   const pushExecDir = (p: string | undefined) => {
     if (!p) return;
@@ -892,7 +923,11 @@ export function prepareDirectSandbox(opts: {
     // locate the owning session store or its per-bot schedule directory.
     SESSION_DATA_DIR: dataDir,
     BOTMUX_SEND_RELAY: outbox,
-    PATH: ['/run/sbxbin', ...canonicalExecDirs, process.env.PATH ?? ''].filter(Boolean).join(':'),
+    PATH: [...new Set([
+      '/run/sbxbin', opts.identityBin ? canonical(opts.identityBin) : '',
+      ...canonicalExecDirs,
+      ...(opts.effectivePath ?? process.env.PATH ?? '').split(':').filter(Boolean).map(canonical),
+    ].filter(Boolean))].join(':'),
     ...(opts.tempDir ? {
       TMPDIR: opts.tempDir,
       TMP: opts.tempDir,

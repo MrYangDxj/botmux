@@ -13,16 +13,14 @@
  *   2. 路由接线（路径、400 错误码、helper 调用、与 /api/cli-options 的相邻位置、
  *      cli-options 新增 modelChoices 字段）用 source-lock 钉住，防止重构时静默走样。
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildModelChoicesResponse,
   isKnownSelectionKey,
 } from '../src/services/model-catalog.js';
 import { TTADK_MODEL_SUGGESTIONS } from '../src/setup/cli-selection.js';
-import type { CliAdapter } from '../src/adapters/cli/types.js';
 
 // ─── 400 分支：路由用 isKnownSelectionKey 判定 ──────────────────────────────
 
@@ -76,36 +74,27 @@ describe('GET /api/cli-options/models — 200 响应 shape', () => {
     expect(body.models).not.toContain('gpt-5.2');
   });
 
+  it('live 能力目录作为可选 modelCapabilities 字段追加，不替换旧三字段', async () => {
+    const body = await buildModelChoicesResponse('gemini', {
+      now: () => 1_700_000_000_002,
+      adapterFactory: () => ({
+        detectModelCapabilities: async () => [{ slug: 'gemini-live', serviceTiers: ['priority'] }],
+      } as any),
+    });
+    expect(body.modelCapabilities).toEqual([
+      { slug: 'gemini-live', serviceTiers: ['priority'] },
+    ]);
+    expect(body.source).toBe('live');
+    expect(body.detectedAt).toBe(1_700_000_000_002);
+    expect(body.models).toContain('gemini-live');
+  });
+
   it('未知 key 的响应构造也是 fail-soft（空 models + static），400 由路由在更外层拦截', async () => {
     // 注意：真实路由先经 isKnownSelectionKey 拦截返回 400，不会走到这里；
     // 这里验证 helper 自身对未知 key 不抛异常。
     const body = await buildModelChoicesResponse('does-not-exist');
     expect(body.models).toEqual([]);
     expect(body.source).toBe('static');
-  });
-
-  it('official Codex endpoint cache follows the resolved default executable', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'botmux-model-endpoint-runtime-'));
-    const executable = join(dir, 'codex');
-    try {
-      writeFileSync(executable, 'old');
-      let calls = 0;
-      const opts = {
-        resolveExecutable: (command: string) => {
-          expect(command).toBe('codex');
-          return executable;
-        },
-        adapterFactory: () => ({
-          detectModels: async () => [`endpoint-${++calls}`],
-        }) as CliAdapter,
-      };
-      expect((await buildModelChoicesResponse('codex-app', opts)).models).toEqual(['endpoint-1']);
-      writeFileSync(executable, 'new-official-runtime-with-different-size');
-      expect((await buildModelChoicesResponse('codex-app', opts)).models).toEqual(['endpoint-2']);
-      expect(calls).toBe(2);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 
@@ -133,12 +122,23 @@ describe('dashboard.ts 路由接线（source-lock）', () => {
     expect(routeBlock).toContain("jsonRes(res, 400, { ok: false, error: 'unknown_selection_key' })");
   });
 
-  it('200 分支携带 Bot runtime 走 buildModelChoicesResponse', () => {
+  it('200 分支走 buildModelChoicesResponse（live 权威 / 静态兜底的单一事实源）', () => {
     const routeStart = source.indexOf("url.pathname === '/api/cli-options/models'");
-    const routeBlock = source.slice(routeStart, routeStart + 1800);
+    const routeBlock = source.slice(routeStart, routeStart + 1200);
+    expect(routeBlock).toContain('buildModelChoicesResponse(key, {');
+  });
+
+  it('带 appId 参数时按该 Bot 的精确 launch shape、runtime/env 探测', () => {
+    const routeStart = source.indexOf("url.pathname === '/api/cli-options/models'");
+    const routeBlock = source.slice(routeStart, routeStart + 2000);
     expect(routeBlock).toContain("url.searchParams.get('appId')");
-    expect(routeBlock).toContain('runtimeExecutableForBotSelection(key, bot)');
-    expect(routeBlock).toContain('buildModelChoicesResponse(key, { runtimeExecutable })');
+    expect(routeBlock).toContain('getBot(appId).config');
+    expect(routeBlock).toContain('lookupCliSelectionForBotShape(');
+    expect(routeBlock).toContain('runtimeExecutableForBotSelection(key, botConfig)');
+    expect(routeBlock).toContain('buildSessionChildEnv(process.env, botConfig.envPolicy)');
+    expect(routeBlock).toContain('botInjectedEnv(botConfig.env, botConfig.envPolicy)');
+    expect(routeBlock).toContain('runtimeContext');
+    expect(routeBlock).toContain('runtimeExecutable: cliPath');
   });
 
   it('/api/cli-options 每个 option 带 modelChoices 字段（静态候选）', () => {

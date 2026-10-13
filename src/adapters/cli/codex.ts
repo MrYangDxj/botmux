@@ -1,12 +1,11 @@
-import { execFile } from 'node:child_process';
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { assertNoGlobalBotmuxSkills } from '../../skills/zero-injection.js';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { CLI_MODEL_CHOICES } from './model-choices.js';
 import { resolveCommand } from './registry.js';
 import { BOTMUX_SHELL_HINTS } from './shared-hints.js';
-import { parseDebugModelCatalogJson } from './model-catalog-json.js';
+import type { DebugModelCapabilities } from './model-catalog-json.js';
+import { loadCodexServiceTierCatalog } from '../../services/codex-service-tier-catalog.js';
 import type { CliAdapter, PtyHandle } from './types.js';
 import { codexHistoryPath, codexHome, codexSessionsRoot } from '../../services/codex-paths.js';
 import { findCodexRolloutSetByPid } from '../../services/codex-transcript.js';
@@ -247,6 +246,18 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
   // is a spawn-time concern.
   const rawBin = pathOverride ?? 'codex';
   let cachedBin: string | undefined;
+  const detectModelCapabilities = async (
+    options?: { env?: NodeJS.ProcessEnv },
+  ): Promise<readonly DebugModelCapabilities[] | null> => {
+    try {
+      return await loadCodexServiceTierCatalog({
+        cliBin: (cachedBin ??= resolveCommand(rawBin)),
+        env: options?.env,
+      });
+    } catch {
+      return null;
+    }
+  };
   return {
     id: 'codex',
     mcpGateway: {
@@ -278,7 +289,7 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
     authPaths: ['~/.codex'],
     get resolvedBin(): string { return (cachedBin ??= resolveCommand(rawBin)); },
 
-    buildArgs({ sessionId, resume, resumeSessionId, quietResume, forkSession, workingDir, model, reasoningEffort, disableCliBypass, bypassHookTrust, hideRateLimitModelNudge, readIsolation, remoteWsUrl, remoteThreadId, shellSubprocessEnv, promptInjection }) {
+    buildArgs({ sessionId, resume, resumeSessionId, quietResume, forkSession, workingDir, model, reasoningEffort, serviceTier, disableCliBypass, bypassHookTrust, hideRateLimitModelNudge, readIsolation, remoteWsUrl, remoteThreadId, shellSubprocessEnv, promptInjection }) {
       if (promptInjection === 'none') {
         assertNoGlobalBotmuxSkills(join(codexHome(), 'skills'));
       }
@@ -393,6 +404,11 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
         // low/medium/high/xhigh/max/ultra，故原样透传，不做降级——收敛会静默改变
         // 用户请求的档位。
         baseArgs.push('-c', `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+      }
+      if (serviceTier) {
+        // A root override also covers resume/fork; the splitter below moves it
+        // before the subcommand where launcher-provided -c flags stay active.
+        baseArgs.push('-c', `service_tier=${JSON.stringify(serviceTier)}`);
       }
       // Codex app-server can keep its own cwd at $HOME; -C pins fresh agent roots.
       // NOTE: canonicalization of workingDir for the file sandbox is done ONCE in
@@ -635,33 +651,14 @@ export function createCodexAdapter(pathOverride?: string): CliAdapter {
     // mis-fire risk is negligible.
     get skillsDir(): string { return join(codexHome(), 'skills'); },
     // 静态列表是 `codex debug models` visibility=list 的快照（2026-08）；
-    // live 探测（detectModels）会补充目录增量，live 不可用时以此兜底。
+    // live 探测成功时只使用 live 目录；live 不可用时以此快照兜底。
     modelChoices: CLI_MODEL_CHOICES['codex'],
-    // Live 模型枚举：`codex debug models`（官方支持，"Render the raw model
-    // catalog as JSON"）输出与 traex 同构的 JSON 目录，复用共享解析。整包可达
-    // 数百 KB，故 maxBuffer 给到 16MB、8s 超时兜底。仅 dashboard 在用户选中
-    // codex 时按需调用，不在 daemon/worker 启动路径上；任何异常（spawn 失败/
-    // 超时/输出非法）一律 fail-soft 返回 null，picker 回退到上面的 modelChoices。
-    async detectModelCatalog() {
-      try {
-        // lazy promisify：顶层 promisify(execFile) 会在部分 mock child_process
-        // 的测试 import 阶段炸（mock 无 execFile 导出）；推迟到调用时，fail-soft
-        // 的 try/catch 兜住（契约：任何异常 → null）。
-        const execFileAsync = promisify(execFile);
-        const { stdout } = await execFileAsync(this.resolvedBin, ['debug', 'models'], {
-          timeout: 8000,
-          maxBuffer: 16 * 1024 * 1024,
-          windowsHide: true,
-        });
-        const catalog = parseDebugModelCatalogJson(stdout);
-        return catalog.length > 0 ? catalog : null;
-      } catch {
-        return null;
-      }
-    },
+    // 与保存/启动校验共用真实 binary + env 的能力目录、超时和缓存。
+    detectModelCapabilities,
+
     async detectModels(): Promise<readonly string[] | null> {
-      const catalog = await this.detectModelCatalog?.();
-      return catalog ? catalog.map(entry => entry.slug) : null;
+      const catalog = await detectModelCapabilities();
+      return catalog?.map(model => model.slug) ?? null;
     },
   };
 }

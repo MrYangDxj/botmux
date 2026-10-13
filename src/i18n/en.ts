@@ -1,5 +1,14 @@
 /** English translations — mirrors the keys defined in `zh.ts`. */
 export const messages: Record<string, string> = {
+  'cmd.effort.usage': '/effort <low|medium|high|xhigh|max|ultra> — Change Codex App reasoning effort for future turns; active-turn updates require explicitly enabling the experimental step_model_switching feature (off by default; levels depend on the current model)',
+  'cmd.effort.applied': 'Future turns will use {effort}; the server accepted the active-turn update. If further inference steps occur in this turn, they can use the new setting; requests already issued keep their original parameters.',
+  'cmd.effort.future_only': 'Future turns will use {effort}; the active turn update was not confirmed (it may have completed or the API may be unavailable).',
+  'cmd.effort.step_model_switching_disabled': 'Future turns will use {effort}; the active turn was not updated because Codex has not enabled the experimental step_model_switching feature (off by default; Botmux does not enable it automatically). See /help and the slash command documentation for prerequisites.',
+  'cmd.effort.target_unavailable': 'Future turns will use {effort}; the target turn has ended or is unavailable and was not updated.',
+  'cmd.effort.invalid_without_choices': 'The current model advertises no supported reasoning effort levels; the setting cannot be changed.',
+  'cmd.effort.invalid': 'This model does not support that effort. Available: {choices}',
+  'cmd.effort.unavailable': 'The Codex App connection is not ready or is being replaced. Please retry shortly.',
+  'cmd.effort.error': 'The reasoning effort update could not be confirmed. Please retry shortly.',
   'worker.steer_accepted': 'Got it — guidance accepted',
   // ─── Terminal status pages ───────────────────────────────────────────────
   'terminal.status.starting.title': 'Terminal is starting',
@@ -1193,6 +1202,8 @@ export const messages: Record<string, string> = {
   'card.action.compact_unsupported': '⚠️ Card compact is not supported here; send /compact directly',
   'card.action.close_refused': 'Could not close the session because remote cancellation was not proven ({error}). The session was kept for retry and the remote may still be running. Retry later.',
   'card.action.close_refused_with_task': 'Could not close the session because remote cancellation was not proven ({error}). The session was kept for retry. Remote session id: {taskId}. The remote may still be running; retry later.',
+  'card.action.close_residual': 'The session was closed locally, but the remote session was not cancelled ({taskId}). Manual cleanup is required.',
+  'card.action.close_residual_local': 'The session was closed locally and the remote session was cancelled, but a credentialed local subprocess may still be running ({taskId}). Inspect the host process manually.',
   'card.action.no_output': '(no output yet)',
   'card.action.tui_select_title': 'Select options',
   'card.action.tui_custom_input': 'Custom input',
