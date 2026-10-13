@@ -1,7 +1,10 @@
 import type { BotConfig } from '../bot-registry.js';
 import { botInjectedEnv, buildSessionChildEnv } from '../core/env-policy.js';
-import { runtimeExecutableForBotSelection } from '../services/model-catalog.js';
-import { lookupCliSelectionForBotShape, resolveCliSelection } from '../setup/cli-selection.js';
+import {
+  lookupCliSelection,
+  lookupCliSelectionForBotShape,
+  resolveCliSelection,
+} from '../setup/cli-selection.js';
 
 export interface ModelCatalogProbeContext {
   cliId: ReturnType<typeof resolveCliSelection>['cliId'];
@@ -21,11 +24,18 @@ export function modelCatalogProbeContext(
   baseEnv: NodeJS.ProcessEnv,
 ): ModelCatalogProbeContext {
   const cliId = resolveCliSelection(key).cliId;
+  const requestedSelection = lookupCliSelection(key);
   const persistedSelection = botConfig
     ? lookupCliSelectionForBotShape(botConfig.cliId, botConfig.wrapperCli, botConfig.cliLaunchMode)
     : undefined;
-  const runtimeApplies = botConfig !== undefined && persistedSelection?.key === key;
-  const runtimeExecutable = runtimeExecutableForBotSelection(key, botConfig);
+  const runtimeApplies = botConfig !== undefined
+    && requestedSelection !== undefined
+    && persistedSelection?.key === requestedSelection.key;
+  const runtimeExecutable = runtimeApplies
+    && !persistedSelection.wrapperCli
+    && !persistedSelection.cliLaunchMode
+    ? botConfig.cliRuntime?.executable ?? botConfig.cliPathOverride ?? undefined
+    : undefined;
   return {
     cliId,
     runtimeExecutable,

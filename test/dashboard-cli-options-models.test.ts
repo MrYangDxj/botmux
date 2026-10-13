@@ -22,7 +22,11 @@ import {
 } from '../src/services/model-catalog.js';
 import { modelCatalogProbeContext } from '../src/dashboard/model-catalog-request.js';
 import type { BotConfig } from '../src/bot-registry.js';
-import { TTADK_MODEL_SUGGESTIONS } from '../src/setup/cli-selection.js';
+import {
+  CLI_SELECTION_ALIASES,
+  resolveCliSelection,
+  TTADK_MODEL_SUGGESTIONS,
+} from '../src/setup/cli-selection.js';
 
 // ─── 400 分支：路由用 isKnownSelectionKey 判定 ──────────────────────────────
 
@@ -101,6 +105,25 @@ describe('GET /api/cli-options/models — 200 响应 shape', () => {
 });
 
 describe('GET /api/cli-options/models — Bot runtime 上下文', () => {
+  it('每个 alias 与正式键使用相同的 Bot runtime executable、context 和 env', () => {
+    for (const [alias, canonicalKey] of Object.entries(CLI_SELECTION_ALIASES)) {
+      const selection = resolveCliSelection(canonicalKey);
+      const bot = {
+        larkAppId: `cli_alias_${alias}`,
+        cliId: selection.cliId,
+        ...(selection.wrapperCli ? { wrapperCli: selection.wrapperCli } : {}),
+        ...(selection.cliLaunchMode ? { cliLaunchMode: selection.cliLaunchMode } : {}),
+        cliPathOverride: '/bot/bin',
+        env: { BOT_ONLY_SECRET: `secret-${alias}` },
+      } as BotConfig;
+      const baseEnv = { PATH: '/system/bin' };
+
+      expect(modelCatalogProbeContext(alias, bot, baseEnv)).toEqual(
+        modelCatalogProbeContext(canonicalKey, bot, baseEnv),
+      );
+    }
+  });
+
   it('未知 wrapper 请求原生 key 时不注入 Bot env、runtimeContext 或 override', () => {
     const bot = {
       larkAppId: 'cli_unknown_wrapper',
