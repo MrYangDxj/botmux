@@ -313,7 +313,7 @@ export async function fetchDetectedModels(
 } | null> {
   try {
     const query = new URLSearchParams({ key });
-    if (appId) query.set('appId', appId);
+    if (appId) query.set('bot', appId);
     const r = await fetch(`/api/cli-options/models?${query.toString()}`);
     const body = await r.json().catch(() => ({}));
     if (!r.ok || !body || !Array.isArray(body.models)) return null;

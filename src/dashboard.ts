@@ -159,7 +159,6 @@ import {
   CLI_SELECT_OPTIONS,
   resolveCliSelection,
   selectionKeyForBot,
-  lookupCliSelectionForBotShape,
   isTtadkWrapper,
   ttadkAcceptsModel,
   TTADK_DEFAULT_MODEL,
@@ -169,8 +168,8 @@ import {
   staticModelChoices,
   isKnownSelectionKey,
   buildModelChoicesResponse,
-  runtimeExecutableForBotSelection,
 } from './services/model-catalog.js';
+import { modelCatalogProbeContext } from './dashboard/model-catalog-request.js';
 import { checkCliAvailability } from './setup/cli-availability.js';
 import { invalidWorkingDirs } from './utils/working-dir.js';
 import { invalidateGlobalConfigCache, mergeDashboardConfig, mergeGlobalConfig, readGlobalConfig, type MaintenanceConfig, type RepoPickerMode, type WhiteboardConfig, type SessionCleanupHours } from './global-config.js';
@@ -298,7 +297,6 @@ import {
   sanitizeSkillForDashboard,
 } from './dashboard/skill-pack-response.js';
 import { effectiveDefaultWorkingDir, getBot, getLoadedConfigPath, loadBotConfigs, parseBotConfigsFromText, type BotConfig, type VcMeetingAgentConfig } from './bot-registry.js';
-import { botInjectedEnv, buildSessionChildEnv } from './core/env-policy.js';
 import {
   findQuotaFallbackCycles,
   normalizeQuotaFallbackBotConfig,
@@ -5674,7 +5672,7 @@ const server = createServer(async (req, res) => {
       if (!isKnownSelectionKey(key)) {
         return jsonRes(res, 400, { ok: false, error: 'unknown_selection_key' });
       }
-      const appId = (url.searchParams.get('appId') ?? url.searchParams.get('bot'))?.trim() || undefined;
+      const appId = url.searchParams.get('bot')?.trim() || undefined;
       let botConfig: BotConfig | undefined;
       try {
         botConfig = appId
@@ -5683,27 +5681,14 @@ const server = createServer(async (req, res) => {
       } catch {
         botConfig = undefined;
       }
-      const cliId = resolveCliSelection(key).cliId;
-      const persistedSelection = botConfig
-        ? lookupCliSelectionForBotShape(botConfig.cliId, botConfig.wrapperCli, botConfig.cliLaunchMode)
-        : undefined;
-      const runtimeApplies = botConfig
-        && persistedSelection?.key === key;
-      const cliPath = runtimeExecutableForBotSelection(key, botConfig);
+      const probeContext = modelCatalogProbeContext(key, botConfig, process.env);
       const body = await buildModelChoicesResponse(key, {
-        runtimeContext: botConfig && runtimeApplies
-          ? `${botConfig.larkAppId}:${cliId}:${cliPath ?? 'default'}`
-          : undefined,
-        probeEnv: botConfig && runtimeApplies
-          ? {
-              ...buildSessionChildEnv(process.env, botConfig.envPolicy),
-              ...botInjectedEnv(botConfig.env, botConfig.envPolicy),
-            }
-          : undefined,
-        runtimeExecutable: cliPath,
+        runtimeContext: probeContext.runtimeContext,
+        probeEnv: probeContext.probeEnv,
+        runtimeExecutable: probeContext.runtimeExecutable,
         adapterFactory: requestedCliId => createCliAdapterSync(
           requestedCliId,
-          requestedCliId === cliId ? cliPath : undefined,
+          requestedCliId === probeContext.cliId ? probeContext.runtimeExecutable : undefined,
         ),
       });
       return jsonRes(res, 200, body);

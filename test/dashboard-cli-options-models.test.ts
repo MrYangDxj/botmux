@@ -20,6 +20,8 @@ import {
   buildModelChoicesResponse,
   isKnownSelectionKey,
 } from '../src/services/model-catalog.js';
+import { modelCatalogProbeContext } from '../src/dashboard/model-catalog-request.js';
+import type { BotConfig } from '../src/bot-registry.js';
 import { TTADK_MODEL_SUGGESTIONS } from '../src/setup/cli-selection.js';
 
 // ─── 400 分支：路由用 isKnownSelectionKey 判定 ──────────────────────────────
@@ -98,6 +100,24 @@ describe('GET /api/cli-options/models — 200 响应 shape', () => {
   });
 });
 
+describe('GET /api/cli-options/models — Bot runtime 上下文', () => {
+  it('未知 wrapper 请求原生 key 时不注入 Bot env、runtimeContext 或 override', () => {
+    const bot = {
+      larkAppId: 'cli_unknown_wrapper',
+      cliId: 'codex',
+      wrapperCli: 'ccr claude',
+      cliPathOverride: '/bot/codex',
+      env: { BOT_ONLY_SECRET: 'must-not-leak' },
+    } as BotConfig;
+    expect(modelCatalogProbeContext('codex', bot, { PATH: '/system/bin' })).toEqual({
+      cliId: 'codex',
+      runtimeExecutable: undefined,
+      runtimeContext: undefined,
+      probeEnv: undefined,
+    });
+  });
+});
+
 // ─── Source-lock：dashboard.ts 的路由接线 ───────────────────────────────────
 
 describe('dashboard.ts 路由接线（source-lock）', () => {
@@ -128,17 +148,16 @@ describe('dashboard.ts 路由接线（source-lock）', () => {
     expect(routeBlock).toContain('buildModelChoicesResponse(key, {');
   });
 
-  it('带 appId 参数时按该 Bot 的精确 launch shape、runtime/env 探测', () => {
+  it('带 bot 参数时按该 Bot 的精确 launch shape、runtime/env 探测', () => {
     const routeStart = source.indexOf("url.pathname === '/api/cli-options/models'");
     const routeBlock = source.slice(routeStart, routeStart + 2000);
-    expect(routeBlock).toContain("url.searchParams.get('appId')");
+    expect(routeBlock).toContain("url.searchParams.get('bot')");
+    expect(routeBlock).not.toContain("url.searchParams.get('appId')");
     expect(routeBlock).toContain('getBot(appId).config');
-    expect(routeBlock).toContain('lookupCliSelectionForBotShape(');
-    expect(routeBlock).toContain('runtimeExecutableForBotSelection(key, botConfig)');
-    expect(routeBlock).toContain('buildSessionChildEnv(process.env, botConfig.envPolicy)');
-    expect(routeBlock).toContain('botInjectedEnv(botConfig.env, botConfig.envPolicy)');
-    expect(routeBlock).toContain('runtimeContext');
-    expect(routeBlock).toContain('runtimeExecutable: cliPath');
+    expect(routeBlock).toContain('modelCatalogProbeContext(key, botConfig, process.env)');
+    expect(routeBlock).toContain('runtimeContext: probeContext.runtimeContext');
+    expect(routeBlock).toContain('probeEnv: probeContext.probeEnv');
+    expect(routeBlock).toContain('runtimeExecutable: probeContext.runtimeExecutable');
   });
 
   it('/api/cli-options 每个 option 带 modelChoices 字段（静态候选）', () => {

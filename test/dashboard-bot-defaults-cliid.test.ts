@@ -329,7 +329,7 @@ describe('Codex-compatible runtime editor', () => {
       }));
       await flushEffects();
       expect(modelFetch).toHaveBeenCalledTimes(2);
-      expect(modelFetch.mock.calls[1]?.[0]).toBe('/api/cli-options/models?key=codex&appId=cli_runtime');
+      expect(modelFetch.mock.calls[1]?.[0]).toBe('/api/cli-options/models?key=codex&bot=cli_runtime');
     } finally {
       globalThis.fetch = previousFetch;
     }
