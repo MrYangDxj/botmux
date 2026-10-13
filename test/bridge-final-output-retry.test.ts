@@ -4104,10 +4104,6 @@ describe('Worker turn_terminal routing', () => {
       type: 'screen_update', content: 'silent progress', status: 'working', turnId: 'schedule-turn',
     } satisfies Extract<WorkerToDaemon, { type: 'screen_update' }>);
     (ds.worker as any).emit('message', {
-      type: 'tui_prompt', description: 'silent approval',
-      options: [{ text: 'allow', selected: false }], turnId: 'schedule-turn',
-    } satisfies Extract<WorkerToDaemon, { type: 'tui_prompt' }>);
-    (ds.worker as any).emit('message', {
       type: 'user_notify', message: 'silent warning', turnId: 'schedule-turn',
     } satisfies Extract<WorkerToDaemon, { type: 'user_notify' }>);
     (ds.worker as any).emit('message', {
@@ -4329,7 +4325,7 @@ describe('Worker turn_terminal routing', () => {
     expect(ds.suppressedFinalOutputTurns.get('delivery-stable-key')).toBe(2);
   });
 
-  it('suppresses non-final streaming, TUI, and diagnostic UI for a listener_thread receiver', async () => {
+  it('suppresses non-final streaming and diagnostic UI for a listener_thread receiver', async () => {
     const ds = makeDs();
     ds.scope = 'chat';
     ds.session.scope = 'chat';
@@ -4366,13 +4362,6 @@ describe('Worker turn_terminal routing', () => {
       turnId: 'delivery-stable-key',
       dispatchAttempt: 1,
     } satisfies Extract<WorkerToDaemon, { type: 'screen_update' }>);
-    (ds.worker as any).emit('message', {
-      type: 'tui_prompt',
-      description: 'permission needed',
-      options: [{ text: 'allow', selected: false }],
-      turnId: 'delivery-stable-key',
-      dispatchAttempt: 1,
-    } satisfies Extract<WorkerToDaemon, { type: 'tui_prompt' }>);
     (ds.worker as any).emit('message', {
       type: 'user_notify', message: 'submit failed', turnId: 'delivery-stable-key', dispatchAttempt: 1,
     } satisfies Extract<WorkerToDaemon, { type: 'user_notify' }>);

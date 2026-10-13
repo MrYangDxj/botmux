@@ -68,6 +68,18 @@ describe('startInitialPassthroughSession ownership', () => {
   });
 });
 
+describe('startInitialPassthroughSession substitute marking', () => {
+  it('carries quoteOnly / substitute onto the reply target like every other inbound path', () => {
+    // Regression: `substitute` was destructured but never read, so a
+    // substitute-triggered cold-start passthrough lost its chat-scope
+    // quote-reply / footer substitute addressing.
+    const region = fnRegion('startInitialPassthroughSession', 14000);
+    const call = region.slice(region.indexOf('beginReplyTargetTurn(ds, replyRootId, messageId'));
+    expect(call.slice(0, 400)).toMatch(/quoteOnly: substituteReplyMode === 'quote', substitute,/);
+    expect(region).toMatch(/const substituteReplyMode = substitute\s*\?/);
+  });
+});
+
 describe('startInitialPassthroughSession call sites', () => {
   it('thread-reply injection keeps the foreign-bot guard on owner fields', () => {
     // thread 执行段（executeThreadSlash）里的字段名已与新话题入口对齐：isForeignBotSender / senderOpenId。

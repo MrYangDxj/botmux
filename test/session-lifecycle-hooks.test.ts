@@ -346,25 +346,14 @@ describe('worker-pool lifecycle hook integration', () => {
     restoreGetBot.mockRestore();
   });
 
-  it('emits session.requires_attention from tui_prompt and user_notify IPC', async () => {
+  it('emits session.requires_attention from user_notify IPC', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker });
     __testOnly_setupWorkerHandlers(ds, worker);
 
-    worker.emit('message', {
-      type: 'tui_prompt',
-      description: 'Approve command?',
-      options: [{ text: 'Yes', selected: false }],
-      multiSelect: false,
-    });
     worker.emit('message', { type: 'user_notify', message: 'Need manual input' });
     await flush();
 
-    expect(emitHookEventMock).toHaveBeenCalledWith('session.requires_attention', expect.objectContaining({
-      reason: 'tui_prompt',
-      description: 'Approve command?',
-      optionsCount: 1,
-    }));
     expect(emitHookEventMock).toHaveBeenCalledWith('session.requires_attention', expect.objectContaining({
       reason: 'user_notify',
       message: 'Need manual input',
@@ -428,7 +417,7 @@ describe('worker-pool lifecycle hook integration', () => {
     expect(emitHookEventMock).not.toHaveBeenCalled();
   });
 
-  it('does not emit lifecycle hooks for receiver TUI, notifications, status, or exit', async () => {
+  it('does not emit lifecycle hooks for receiver notifications, status, or exit', async () => {
     const worker = makeFakeWorker();
     const ds = makeDs({ worker, lastScreenStatus: 'working' });
     ds.session.vcMeetingReceiver = {
@@ -439,12 +428,6 @@ describe('worker-pool lifecycle hook integration', () => {
     };
     __testOnly_setupWorkerHandlers(ds, worker);
 
-    worker.emit('message', {
-      type: 'tui_prompt',
-      description: 'Approve meeting action?',
-      options: [{ text: 'Yes', selected: false }],
-      multiSelect: false,
-    });
     worker.emit('message', { type: 'user_notify', message: 'meeting-derived diagnostic' });
     worker.emit('message', { type: 'screen_update', content: 'transcript', status: 'idle' });
     worker.emit('exit', 1);

@@ -199,14 +199,6 @@ async function waitForHistoryAppend(
   return { found: false };
 }
 
-/** Build a JSON-escaped prefix for a cheap raw-line prefilter before parsing
- *  history.jsonl. The final match is exact against the decoded `text` field;
- *  the prefix only avoids JSON-parsing unrelated lines from other sessions. */
-function historyMarker(content: string): string {
-  const prefix = content.slice(0, 40);
-  return JSON.stringify(prefix).slice(1, -1);  // strip surrounding quotes
-}
-
 function latestCodexSessionForBotmuxSession(botmuxSessionId: string): string | undefined {
   const historyPath = codexHistoryPath();
   if (!existsSync(historyPath)) return undefined;

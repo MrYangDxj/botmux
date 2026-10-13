@@ -992,12 +992,11 @@ describe('core-only entrypoint hardening (codex 4 P1s — source lock)', () => {
     // tmux backend: pane scripts bake a HOST-RESOLVED bin dir literal (codex P1:
     // the pane can't resolve at runtime — BOTMUX_CORE_ONLY/SESSION_DATA_DIR are
     // scrubbed before the script runs). shellWrapperScript(binDir) takes it as an
-    // arg; call sites resolve via resolveBotmuxWrapperBinDir(opts.env). NO hardcoded
-    // $HOME/.botmux/bin and NO runtime-env shell resolution.
+    // arg; call sites (tmux-pipe-backend / zellij / zmx, checked below) resolve via
+    // resolveBotmuxWrapperBinDir(opts.env). NO hardcoded $HOME/.botmux/bin and NO
+    // runtime-env shell resolution.
     const tmuxSrc = readFileSync(resolve('src/adapters/backend/tmux-backend.ts'), 'utf8');
     expect(tmuxSrc).toContain("export function shellWrapperScript(binDir: string, kind: ShellKind = 'sh')");
-    expect(tmuxSrc).toContain('const wrapperBinDir = resolveBotmuxWrapperBinDir(opts.env ?? process.env);');
-    expect(tmuxSrc).toContain(': shellWrapperScript(wrapperBinDir, shellKind);');
     expect(tmuxSrc).not.toContain('export PATH="$HOME/.botmux/bin:$PATH"');
     expect(tmuxSrc).not.toContain('botmuxWrapperPathExportSh'); // footgun removed
     const fishAwarePersistentBackendCalls: Record<string, RegExp> = {

@@ -144,10 +144,6 @@ const CONSUMERS: Record<string, Rule> = {
       + 'closeSession itself. No user surface at schedule time.',
     count: 2,
   },
-  'core/session-manager.ts::suspendActiveSessionsForBot::closeSession': {
-    category: 'background',
-    why: 'Bot-wide suspend sweep; a refusal keeps the row active and logged.',
-  },
   'core/trigger-session.ts::reconcileIdempotencyLeasesOnBoot::closeSessionForBackgroundCleanup': {
     category: 'background',
     why: 'Boot reconcile: wrapper logs refusal and residual with the remote id.',

@@ -1426,8 +1426,6 @@ export interface SessionGroupConfig {
    * 'auto' (default) applies it at birth; 'off' keeps Feishu's default avatar.
    */
   avatar?: 'auto' | 'off';
-  /** Reserved (PR3): auto-dispose after N idle days; 0/undefined = off. */
-  idleDays?: number;
 }
 
 export interface BotConfig {
@@ -2896,10 +2894,6 @@ export function findOncallChatForAnyBot(chatId: string): OncallChat | undefined 
     if (entry) return entry;
   }
   return oncallChatCache?.chats.get(chatId);
-}
-
-export function isChatOncallBoundForAnyBot(chatId: string): boolean {
-  return !!findOncallChatForAnyBot(chatId);
 }
 
 // Per-bot brand label, mtime-cached for the disk fallback. Keyed by larkAppId →

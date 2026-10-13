@@ -11,6 +11,7 @@ import { logger } from '../../utils/logger.js';
 import { t, localeForBot, type Locale } from '../../i18n/index.js';
 import { askOptionLayoutForBot, type AskOptionLayout } from './ask-option-layout.js';
 import { replyMessage, sendMessage, updateMessage } from './client.js';
+import { TRANSIENT_LARK_CODES } from './api-gate.js';
 import { requestGrantForAskClicker } from './ask-grant-request.js';
 import { publishReplyCardAsk, replyCardAskCanAct } from '../../core/turn-reply-ask.js';
 
@@ -103,28 +104,6 @@ export function createLarkAskCardDispatcher(
   };
 }
 
-/**
- * Feishu business error codes that mean "the request is transient — retry
- * later", per the official IM v1 send/reply error table + frequency-control
- * guide (codex P1-3). These must be retryable EVEN when the HTTP status is a
- * 4xx (some legacy freq-control surfaces as HTTP 400) or a 2xx-body business
- * error — otherwise a same-uuid partial-success convergence (the second request
- * arriving while the first is still "being sent") is wrongly given up on.
- *
- *   230049  the message is being sent — official "please retry"
- *   230020  message API per-chat rate limit
- *   99991400 generic OpenAPI frequency control (modern = HTTP 429, legacy = 400)
- *
- * NOT included: 11232 / 11233 are the old V4 message API; the current im.v1
- * create/reply path never returns them, so mixing them in would only widen the
- * whitelist without cause.
- *
- * Rate-limit codes (99991400 / HTTP 429) ideally honour `x-ogw-ratelimit-reset`
- * as the retry delay — the broker's short fixed backoff can't outlast a long
- * official reset window. Plumbing that through AskDispatchError.retryAfterMs is
- * a follow-up (see PR notes); 230049/230020 converge within the short backoff.
- */
-const TRANSIENT_LARK_CODES = new Set([230049, 230020, 99991400]);
 
 /** Extract a Lark business code from either error shape:
  *  - axios path A: `response.data.code` / top-level `code` (number)

@@ -63,7 +63,6 @@ const mockGetBot = vi.fn();
 const mockGetAllBots = vi.fn(() => []);
 const mockGetBotOpenId = vi.fn((larkAppId: string) => mockGetBot(larkAppId)?.botOpenId as string | undefined);
 const mockGetOwnerOpenId = vi.fn(() => undefined as string | undefined);
-const mockIsChatOncallBoundForAnyBot = vi.fn<(chatId: string) => boolean>(() => false);
 const mockFindOncallChat = vi.fn<(larkAppId: string, chatId: string) => { chatId: string; workingDir: string } | undefined>(() => undefined);
 vi.mock('../src/bot-registry.js', () => ({
   getBot: (...args: any[]) => mockGetBot(...args),
@@ -71,7 +70,6 @@ vi.mock('../src/bot-registry.js', () => ({
   getBotOpenId: (...args: any[]) => mockGetBotOpenId(...(args as [string])),
   getOwnerOpenId: (...args: any[]) => mockGetOwnerOpenId(...args),
   findOncallChat: (...args: any[]) => mockFindOncallChat(...(args as [string, string])),
-  isChatOncallBoundForAnyBot: (...args: any[]) => mockIsChatOncallBoundForAnyBot(...(args as [string])),
 }));
 
 // 默认与真实实现等价（测试 bot 未开 defaultOncall → 不绑定）；个别用例改写实现来模拟
@@ -2686,7 +2684,6 @@ describe('im.message.receive_v1 — message_id dedupe (re-push protection)', () 
     mockGetCachedChatMode.mockReset().mockReturnValue(undefined);
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockFindOncallChat.mockReturnValue(undefined);
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
@@ -3032,7 +3029,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
     mockRecordObservedBots.mockClear();
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockFindOncallChat.mockReturnValue(undefined);
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
@@ -4082,7 +4078,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
   it('lets a bot use /t to seed a topic in an oncall chat (override reachable past the oncall exemption)', async () => {
     // oncall 短路整段 gate（!findOncallChat），override 仍须落在它后面照常翻 thread。
     mockGetChatMode.mockResolvedValueOnce('group');
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(true);
     mockFindOncallChat.mockReturnValue({ chatId: 'chat-001', workingDir: '/repo' });
     mockReadFileSync.mockReturnValue('{}');  // empty cross-ref → unknown peer，靠 oncall 放行
     const event = makeBotMessageEvent({
@@ -4197,7 +4192,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
     // 注意 /introduce 写的是 observed-bots-store（发现/能 @ 到对方），跟这道接收侧
     // cross-ref vetting 是两套独立存储，不是这里放行的前提。
     mockGetChatMode.mockResolvedValueOnce('group');
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(true);
     mockFindOncallChat.mockReturnValue({ chatId: 'chat-001', workingDir: '/repo' });
     mockReadFileSync.mockReturnValue('{}');  // empty cross-ref → unknown peer
     const event = makeBotMessageEvent({
@@ -4227,7 +4221,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
     // (787-799) 之后。所以即便 chat 是 oncall-bound，本 bot 自己发的非 /close
     // 消息仍在 self 分支被 drop，不会因为 oncall 而被路由。
     // （self 非 /close 在 decideRouting 之前就 return，故无需 stub getChatMode。）
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(true);
     mockFindOncallChat.mockReturnValue({ chatId: 'chat-001', workingDir: '/repo' });
     const event = makeBotMessageEvent({
       senderOpenId: MY_OPEN_ID,  // own message
@@ -4246,7 +4239,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
   it('still processes self /close even when chat is oncall-bound', async () => {
     // 镜像上一条：oncall 不应改变 self /close 的既有行为 —— 精确 /close 仍进入
     // handleThreadReply 走关闭流程。
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(true);
     mockFindOncallChat.mockReturnValue({ chatId: 'chat-001', workingDir: '/repo' });
     const event = makeBotMessageEvent({
       senderOpenId: MY_OPEN_ID,  // own message
@@ -4270,7 +4262,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
     // the same chat. Cross-bot oncall discovery may still report the chat as
     // bound somewhere, but that must not open talk access for this receiver.
     mockGetChatMode.mockResolvedValueOnce('topic');
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(true);
     mockFindOncallChat.mockReturnValue(undefined);
     mockGetBot.mockReturnValue({
       config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedUsers: ['ou_allowed_sibling'] },
@@ -4298,7 +4289,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
   it('allows ordinary talk for any sender when the current chat is in allowedChatGroups', () => {
     // chatId-based: membership is implicit (you can only post in chats you belong to),
     // so any sender posting in a talk-open chat passes — no member snapshot needed.
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockGetBot.mockReturnValue({
       config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
       botOpenId: MY_OPEN_ID,
@@ -4311,7 +4301,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
 
   it('denies talk in a chat that is not listed in allowedChatGroups when an allowlist exists', () => {
     // chat-scoped: a talk-open chat does NOT leak permission into other chats / DMs.
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockGetBot.mockReturnValue({
       config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedChatGroups: ['oc_team'] },
       botOpenId: MY_OPEN_ID,
@@ -4340,7 +4329,6 @@ describe('im.message.receive_v1 — bot-to-bot @mention routing', () => {
     // scoped open_id is never in that list, so a valid @mention fell through
     // to "⚠️ 无操作权限" instead of routing to the target bot.
     mockGetChatMode.mockResolvedValueOnce('group');
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockReadFileSync.mockReturnValue(JSON.stringify({ 'BotB': OTHER_BOT_OPEN_ID }));
     mockGetBot.mockReturnValue({
       config: { larkAppId: MY_APP_ID, larkAppSecret: 'secret', cliId: 'claude-code', allowedUsers: ['ou_allowed_human_only'] },
@@ -7021,7 +7009,6 @@ describe('im.message.receive_v1 — per-chat mention mode (chatMentionModes over
 
 describe('globalGrants — global talk-only authorization (canTalk / canOperate)', () => {
   beforeEach(() => {
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockReadFileSync.mockReturnValue('{}');  // empty peer cross-ref
   });
 
@@ -7058,7 +7045,6 @@ describe('globalGrants — global talk-only authorization (canTalk / canOperate)
 
 describe('managed Agent clone owner boundary', () => {
   beforeEach(() => {
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockReadFileSync.mockReturnValue('{}');
   });
 
@@ -7183,7 +7169,6 @@ describe('managed Agent clone owner boundary', () => {
 
 describe('configured-but-unresolved allowlist stays fail-closed (not fail-open)', () => {
   beforeEach(() => {
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockReadFileSync.mockReturnValue('{}');  // empty peer cross-ref
   });
 
@@ -7238,7 +7223,6 @@ describe('im.message.receive_v1 — stale chat-scope detection (group → topic 
     __resetEventClaimsForTest();
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockListChatBotMembers.mockResolvedValue([{ openId: MY_OPEN_ID, name: 'BotA' }]);
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
@@ -7344,7 +7328,6 @@ describe('im.message.receive_v1 — stale topic detection (topic → group conve
     __resetEventClaimsForTest();
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockListChatBotMembers.mockResolvedValue([{ openId: MY_OPEN_ID, name: 'BotA' }]);
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
@@ -8554,7 +8537,6 @@ describe('im.message.receive_v1 — /introduce command', () => {
     __resetEventClaimsForTest();
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockRecordObservedBots.mockReset();
     mockReplyMessage.mockReset().mockResolvedValue('ack-msg-id');
     mockIsHumanOpenId.mockReset().mockResolvedValue(false);
@@ -9679,7 +9661,6 @@ describe('im.message.receive_v1 — ack-safe duplicate delivery', () => {
     mockRecordObservedBots.mockClear();
     setupBotState({ allowedUsers: [USER_OPEN_ID] });
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     mockFindOncallChat.mockReturnValue(undefined);
     mockGetChatMode.mockResolvedValue('group');
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
@@ -10084,7 +10065,6 @@ describe('im.message.receive_v1 — botOpenId startup race', () => {
     mockRecordObservedBots.mockClear();
     setupBotState();
     handlers = makeHandlers();
-    mockIsChatOncallBoundForAnyBot.mockReturnValue(false);
     startLarkEventDispatcher(MY_APP_ID, 'secret', handlers);
   });
 

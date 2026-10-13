@@ -39,7 +39,9 @@ vi.mock('node:child_process', () => {
   return {
     ...actual,
     execSync: vi.fn(() => ''),
-    execFileSync: vi.fn(),
+    // Bounded pid → open-file probes (utils/process-open-files) run lsof via
+    // execFileSync; mirror execSync's "ran fine, nothing open" stub.
+    execFileSync: vi.fn(() => ''),
     // writeInput's coco/codex paths call execFile. Spreading the real builtin
     // without stubbing it would spawn live CLIs and hang the file (measured).
     execFile: vi.fn((...args: unknown[]) => {

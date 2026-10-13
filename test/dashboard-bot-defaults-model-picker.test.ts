@@ -14,6 +14,7 @@ import { BotAgentSection } from '../src/dashboard/web/bot-defaults-page.js';
 
 const page = readFileSync(new URL('../src/dashboard/web/bot-defaults-page.tsx', import.meta.url), 'utf8');
 const onboarding = readFileSync(new URL('../src/dashboard/web/bot-onboarding.tsx', import.meta.url), 'utf8');
+const fieldControls = readFileSync(new URL('../src/dashboard/web/field-controls.tsx', import.meta.url), 'utf8');
 const i18n = readFileSync(new URL('../src/dashboard/web/i18n.ts', import.meta.url), 'utf8');
 
 const cliState: CliOptionsState = {
@@ -24,8 +25,8 @@ const cliState: CliOptionsState = {
 
 // 源码断言：两处模型输入都换成 ModelPickerField，旧的裸文本框 + datalist 已移除。
 describe('ModelPickerField 源码接线', () => {
-  it('bot-defaults-page 导出 ModelPickerField，BotAgentSection 使用它', () => {
-    expect(page).toMatch(/export function ModelPickerField\b/);
+  it('field-controls 导出 ModelPickerField，BotAgentSection 使用它', () => {
+    expect(fieldControls).toMatch(/export function ModelPickerField\b/);
     const agentSection = page.slice(page.indexOf('export function BotAgentSection'));
     expect(agentSection).toContain('<ModelPickerField');
     expect(agentSection).toContain('dataInput="agentModel"');
@@ -37,8 +38,11 @@ describe('ModelPickerField 源码接线', () => {
     expect(agentSection).toContain('[cliKey, bot]');
   });
 
-  it('onboarding 也使用 ModelPickerField', () => {
-    expect(onboarding).toContain("import { ModelPickerField } from './bot-defaults-page.js';");
+  it('onboarding 也使用 ModelPickerField，且不静态依赖懒加载的 bot-defaults-page', () => {
+    // onboarding 被 app.tsx 静态引入：若它从 bot-defaults-page 取控件，整页
+    // （8k 行）会被打进首屏 chunk，路由级懒加载失效。
+    expect(onboarding).toContain("import { ModelPickerField } from './field-controls.js';");
+    expect(onboarding).not.toContain("from './bot-defaults-page.js'");
     expect(onboarding).toContain('<ModelPickerField');
     expect(onboarding).toContain('dataInput="ob-model"');
   });

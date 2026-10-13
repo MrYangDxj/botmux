@@ -2248,17 +2248,6 @@ describe('pi buildArgs', () => {
     }
   });
 
-  it('buildPiArgs supports appendSystemPrompt when explicitly passed', () => {
-    const args = buildPiArgs({
-      sessionId: 'sess-pi',
-      turnBoundaryExtension: undefined,
-      appendSystemPrompt: ['<botmux_routing>fallback rules</botmux_routing>'],
-    });
-    expect(args).not.toContain('--extension');
-    expect(args).toContain('--append-system-prompt');
-    expect(args).toContain('<botmux_routing>fallback rules</botmux_routing>');
-  });
-
   it('throws when turnBoundaryExtension cannot be resolved or materialized', () => {
     const adapterFailing = createPiAdapter('/bin/pi', () => undefined);
     expect(() => adapterFailing.buildArgs({

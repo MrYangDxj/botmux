@@ -203,10 +203,6 @@ export function botInChatCount(group: GroupInfo): number {
   return group.memberBots.filter(bot => bot.inChat).length;
 }
 
-export function profileHasEntry(profile: RoleProfileSummary, larkAppId: string): boolean {
-  return (profile.botEntries ?? []).some(entry => entry.larkAppId === larkAppId && entry.hasEntry);
-}
-
 export function entryForBot(entries: RoleProfileEntry[], larkAppId: string | null): RoleProfileEntry | undefined {
   return larkAppId ? entries.find(entry => entry.larkAppId === larkAppId) : undefined;
 }
